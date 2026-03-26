@@ -1,0 +1,49 @@
+cmake_minimum_required(VERSION 3.13)
+project(Nebula LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS true)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+find_program(CLANG_TIDY_EXE NAMES "clang-tidy")
+if (CLANG_TIDY_EXE)
+    set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE};--format-style=file")
+endif ()
+
+set(SRC_DIR "${PROJECT_SOURCE_DIR}/src")
+set(INCLUDE_DIR "${PROJECT_SOURCE_DIR}/include")
+set(TEST_DIR "${PROJECT_SOURCE_DIR}/tests")
+
+find_package(Threads REQUIRED)
+
+file(GLOB_RECURSE NEBULA_CORE_SRC CONFIGURE_DEPENDS "${SRC_DIR}/*.cpp")
+list(REMOVE_ITEM NEBULA_CORE_SRC "${SRC_DIR}/main.cpp")
+
+add_library(nebula_core ${NEBULA_CORE_SRC})
+target_include_directories(nebula_core PUBLIC ${INCLUDE_DIR})
+target_compile_options(nebula_core PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(nebula_core PUBLIC Threads::Threads)
+
+add_executable(nebula "${SRC_DIR}/main.cpp")
+target_compile_options(nebula PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(nebula PRIVATE nebula_core)
+
+include(CTest)
+if (BUILD_TESTING)
+    function(add_nebula_test target_name source_file)
+        add_executable(${target_name} "${TEST_DIR}/${source_file}")
+        set_target_properties(${target_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+        target_include_directories(${target_name} PRIVATE ${INCLUDE_DIR} ${TEST_DIR}/include)
+        target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+        target_link_libraries(${target_name} PRIVATE nebula_core)
+        add_test(NAME ${target_name} COMMAND ${target_name})
+    endfunction()
+
+    add_nebula_test(http_parser_test http_parser_test.cpp)
+    add_nebula_test(http_response_writer_test http_response_writer_test.cpp)
+    add_nebula_test(http_server_integration_test http_server_integration_test.cpp)
+    add_nebula_test(logger_test logger_test.cpp)
+    add_nebula_test(router_test router_test.cpp)
+endif ()

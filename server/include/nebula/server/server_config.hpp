@@ -1,0 +1,41 @@
+#ifndef NEBULA_SERVER_SERVER_CONFIG_HPP
+#define NEBULA_SERVER_SERVER_CONFIG_HPP
+
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <thread>
+
+#include "nebula/common/logger.hpp"
+
+namespace nebula::server {
+
+inline std::size_t default_worker_threads() {
+    const std::size_t hardware = std::thread::hardware_concurrency();
+    if (hardware == 0U) {
+        return 2U;
+    }
+    return std::max<std::size_t>(2U, hardware / 2U);
+}
+
+struct ServerConfig {
+    std::uint16_t port = 8080;
+    common::LogLevel log_level = common::LogLevel::Trace;
+    std::filesystem::path log_dir = "runtime/logs";
+    bool log_also_stderr = true;
+    int backlog = 1024;
+    std::size_t max_connections = 4096;
+    std::chrono::milliseconds read_timeout = std::chrono::seconds(30);
+    std::chrono::milliseconds graceful_shutdown_timeout = std::chrono::seconds(5);
+    std::size_t max_header_bytes = static_cast<std::size_t>(16U) * 1024U;
+    std::size_t max_request_target_bytes = static_cast<std::size_t>(8U) * 1024U;
+    std::size_t max_body_bytes = static_cast<std::size_t>(1024U) * 1024U;
+    std::size_t worker_threads = default_worker_threads();
+    bool manage_signals = true;
+};
+
+}  // namespace nebula::server
+
+#endif  // NEBULA_SERVER_SERVER_CONFIG_HPP

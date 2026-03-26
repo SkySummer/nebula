@@ -1,0 +1,480 @@
+#include "nebula/http/http_parser.hpp"
+
+#include <format>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include "nebula_tests/test_support.hpp"
+
+namespace {
+
+using nebula::http::HttpMethod;
+using nebula::http::HttpStatus;
+using nebula::http::ParseStatus;
+using nebula::testsupport::expect_equal;
+using nebula::testsupport::expect_true;
+
+constexpr std::size_t kMaxHeader = static_cast<std::size_t>(16U) * 1024U;
+constexpr std::size_t kMaxBody = static_cast<std::size_t>(1024U) * 1024U;
+
+void expect_parse_error(const nebula::http::ParseResult& parsed, HttpStatus expected_status, const char* message) {
+    expect_equal(parsed.status, ParseStatus::Error, message);
+    expect_equal(parsed.http_status, expected_status, message);
+}
+
+void test_parse_get_request() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+
+    expect_equal(parsed.status, ParseStatus::Complete, "GET request should parse");
+    expect_equal(parsed.request.method, HttpMethod::Get, "method should be GET");
+    expect_equal(parsed.request.request_line, std::string("GET /healthz HTTP/1.1"),
+                 "request line should preserve raw text");
+    expect_equal(parsed.request.path, std::string("/healthz"), "path should parse");
+    expect_true(parsed.request.keep_alive, "http/1.1 should keep alive by default");
+}
+
+void test_parse_get_request_with_query_uses_path_only_for_routing() {
+    const std::string raw = "GET /healthz?ready=1 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+
+    expect_equal(parsed.status, ParseStatus::Complete, "GET with query should parse");
+    expect_equal(parsed.request.path, std::string("/healthz"), "route path should not include query");
+}
+
+void test_parse_post_with_body() {
+    const std::string body = R"({"ok":"yes"})";
+    const std::string raw = std::format(
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+        body.size(), body);
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+
+    expect_equal(parsed.status, ParseStatus::Complete, "POST should parse");
+    expect_equal(parsed.request.method, HttpMethod::Post, "method should be POST");
+    expect_equal(parsed.request.body, body, "body should parse");
+}
+
+void test_parse_need_more_body() {
+    const std::string raw = "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\n12";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::NeedMore, "partial body should need more data");
+}
+
+void test_parse_bad_request_line() {
+    const std::string raw = "BROKEN\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "invalid request line should fail");
+}
+
+void test_parse_unsupported_method() {
+    const std::string raw = "FOO /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::NotImplemented, "unknown method should be rejected");
+}
+
+void test_parse_unsupported_http_version() {
+    const std::string raw = "GET /healthz HTTP/2\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::HTTPVersionNotSupported, "unsupported version should be rejected");
+}
+
+void test_parse_invalid_http_version() {
+    const std::string raw = "GET /healthz HTTP/2.beta\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "invalid version format should be bad request");
+}
+
+void test_parse_invalid_header() {
+    const std::string raw = "GET / HTTP/1.1\r\nInvalidHeader\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "invalid header should fail");
+}
+
+void test_parse_invalid_header_key_char() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nBad(Header): value\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "header key with non-token char should fail");
+}
+
+void test_parse_header_key_space_before_colon_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost : localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "space before colon in header key should fail");
+}
+
+void test_parse_header_key_token_chars_allowed() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Test_Header~1: ok\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "header key token chars should parse");
+    expect_true(parsed.request.headers.contains("x-test_header~1"), "header key should be normalized to lowercase");
+}
+
+void test_parse_header_value_with_ctl_rejected() {
+    const std::string raw = std::format("GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Test: ok{}\r\n\r\n", '\x01');
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "header value with ctl char should fail");
+}
+
+void test_parse_header_value_with_del_rejected() {
+    const std::string raw = std::format("GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Test: ok{}\r\n\r\n", '\x7F');
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "header value with del char should fail");
+}
+
+void test_parse_invalid_content_length() {
+    const std::string raw = "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: abc\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "invalid content-length should fail");
+}
+
+void test_parse_content_too_large() {
+    const std::string raw = "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 6\r\n\r\n123456";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, 5U);
+    expect_parse_error(parsed, HttpStatus::ContentTooLarge, "oversized body should fail");
+}
+
+void test_parse_content_length_sum_overflow_rejected() {
+    const std::string raw = std::format("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+                                        std::numeric_limits<std::size_t>::max());
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, std::numeric_limits<std::size_t>::max());
+    expect_parse_error(parsed, HttpStatus::ContentTooLarge, "content-length sum overflow should fail");
+}
+
+void test_parse_header_too_large() {
+    const std::string raw(20000U, 'a');
+    const auto parsed = nebula::http::parse_http_request(raw, 1024U, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::RequestHeaderFieldsTooLarge, "oversized header should fail");
+}
+
+void test_parse_uri_too_long() {
+    const std::string raw = "GET /0123456789 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, 8U);
+    expect_parse_error(parsed, HttpStatus::URITooLong, "oversized request-target should fail");
+}
+
+void test_parse_options_asterisk_form() {
+    const std::string raw = "OPTIONS * HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "OPTIONS * should parse");
+    expect_equal(parsed.request.method, HttpMethod::Options, "method should be OPTIONS");
+    expect_equal(parsed.request.path, std::string("*"), "asterisk-form should preserve path");
+}
+
+void test_parse_get_asterisk_form_rejected() {
+    const std::string raw = "GET * HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "GET * should be rejected");
+}
+
+void test_parse_post_asterisk_form_rejected() {
+    const std::string raw = "POST * HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "POST * should be rejected");
+}
+
+void test_parse_origin_form_without_leading_slash_rejected() {
+    const std::string raw = "GET healthz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "origin-form without leading slash should be rejected");
+}
+
+void test_parse_connect_requires_authority_form() {
+    const std::string raw = "CONNECT /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "CONNECT with non-authority-form should be rejected");
+}
+
+void test_parse_connection_close() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "request should parse");
+    expect_true(!parsed.request.keep_alive, "connection close should disable keep-alive");
+}
+
+void test_parse_connection_close_in_token_list() {
+    const std::string raw =
+        "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive, close, upgrade\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "request with connection token list should parse");
+    expect_true(!parsed.request.keep_alive, "connection token list containing close should disable keep-alive");
+}
+
+void test_parse_http10_connection_keep_alive_in_token_list() {
+    const std::string raw = "GET /healthz HTTP/1.0\r\nHost: localhost\r\nConnection: upgrade, keep-alive\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "http/1.0 request with connection token list should parse");
+    expect_true(parsed.request.keep_alive,
+                "http/1.0 connection token list containing keep-alive should enable keep-alive");
+}
+
+void test_parse_duplicate_header_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nHost: duplicate\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "duplicate header should fail");
+}
+
+void test_parse_duplicate_content_length_same_value() {
+    const std::string body = "ok";
+    const std::string raw =
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nContent-Length: 02\r\n\r\n" + body;
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "same content-length should parse");
+    expect_equal(parsed.request.body, body, "body should parse when content-length matches");
+}
+
+void test_parse_duplicate_content_length_conflict() {
+    const std::string raw =
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nok";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "conflicting content-length should fail");
+}
+
+void test_parse_transfer_encoding_unsupported() {
+    const std::string raw = "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::NotImplemented, "transfer-encoding should return 501");
+}
+
+void test_parse_consumed_bytes_for_pipeline() {
+    const std::string first = "GET /a HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const std::string second = "GET /b HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const std::string raw = first + second;
+
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "first request should parse");
+    expect_equal(parsed.consumed_bytes, first.size(), "consumed bytes should equal first request size");
+}
+
+void test_parse_http11_missing_host_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nConnection: close\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "http/1.1 without host should fail");
+}
+
+void test_parse_http10_without_host_allowed() {
+    const std::string raw = "GET /healthz HTTP/1.0\r\nConnection: close\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "http/1.0 without host should parse");
+}
+
+void test_parse_empty_host_header_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost:\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "empty host should be rejected");
+}
+
+void test_parse_invalid_host_header_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: bad host\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "host with spaces should fail");
+}
+
+void test_parse_invalid_host_port_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost:abc\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "host with invalid port should fail");
+}
+
+void test_parse_valid_ipv4_host_header() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "valid ipv4 host should parse");
+}
+
+void test_parse_invalid_ipv4_host_header_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: 256.0.0.1:8080\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "invalid ipv4 host should fail");
+}
+
+void test_parse_ipv4_with_leading_zero_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: 127.00.0.1:8080\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "ipv4 host with leading zero should fail");
+}
+
+void test_parse_valid_ipv6_host_header() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: [2001:db8::1]:8080\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "valid ipv6 host should parse");
+}
+
+void test_parse_invalid_ipv6_host_header_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: [2001:::1]:8080\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "invalid ipv6 host should fail");
+}
+
+void test_parse_out_of_range_host_port_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost:65536\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "host with out-of-range port should fail");
+}
+
+void test_parse_valid_ipvfuture_host_header() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: [v1.fe80::a]:8080\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "valid ipvfuture host should parse");
+}
+
+void test_parse_invalid_ipvfuture_host_header_rejected() {
+    const std::string raw = "GET /healthz HTTP/1.1\r\nHost: [v1]\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "invalid ipvfuture host should fail");
+}
+
+void test_parse_absolute_form_host_match() {
+    const std::string raw = "GET http://example.com/healthz HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form host should match authority");
+    expect_equal(parsed.request.path, std::string("/healthz"), "absolute-form should normalize path for routing");
+}
+
+void test_parse_absolute_form_without_path_normalized_to_root() {
+    const std::string raw = "GET http://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form without path should parse");
+    expect_equal(parsed.request.path, std::string("/"), "absolute-form without path should normalize to root");
+}
+
+void test_parse_absolute_form_keeps_original_request_line() {
+    const std::string raw = "GET http://example.com/healthz?ready=1 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form should parse");
+    expect_equal(parsed.request.request_line, std::string("GET http://example.com/healthz?ready=1 HTTP/1.1"),
+                 "request line should keep original absolute-form");
+    expect_equal(parsed.request.path, std::string("/healthz"), "route path should exclude absolute-form query");
+}
+
+void test_parse_absolute_form_query_only_normalized_with_root() {
+    const std::string raw = "GET http://example.com?ready=1 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form query-only should parse");
+    expect_equal(parsed.request.path, std::string("/"), "query-only absolute-form should normalize to root path");
+}
+
+void test_parse_absolute_form_host_case_insensitive_match() {
+    const std::string raw = "GET http://example.com/healthz HTTP/1.1\r\nHost: EXAMPLE.COM\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form host compare should be case-insensitive");
+}
+
+void test_parse_absolute_form_ipv6_compressed_equivalent_match() {
+    const std::string raw = "GET http://[2001:0db8:0:0:0:0:0:1]/healthz HTTP/1.1\r\nHost: [2001:db8::1]\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form ipv6 equivalent forms should match");
+}
+
+void test_parse_absolute_form_ipv6_port_numeric_equivalent_match() {
+    const std::string raw = "GET http://[2001:db8::1]:80/healthz HTTP/1.1\r\nHost: [2001:0DB8::1]:080\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form ipv6 port compare should use numeric value");
+}
+
+void test_parse_absolute_form_host_mismatch() {
+    const std::string raw = "GET http://example.com/healthz HTTP/1.1\r\nHost: other.com\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "absolute-form host mismatch should fail");
+}
+
+void test_parse_absolute_form_ipvfuture_case_insensitive_match() {
+    const std::string raw = "GET http://[v1.fe80::a]/healthz HTTP/1.1\r\nHost: [V1.FE80::A]\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "absolute-form ipvfuture match should be case-insensitive");
+}
+
+void test_parse_absolute_form_userinfo_host_match() {
+    const std::string raw = "GET http://user:pass@example.com/healthz HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "host should match authority without userinfo");
+}
+
+void test_parse_connect_authority_host_match() {
+    const std::string raw = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_equal(parsed.status, ParseStatus::Complete, "connect authority should match host");
+}
+
+void test_parse_connect_authority_host_mismatch() {
+    const std::string raw = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:8443\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody);
+    expect_parse_error(parsed, HttpStatus::BadRequest, "connect host mismatch should fail");
+}
+
+int run_http_parser_tests() {
+    const std::vector<nebula::testsupport::TestCase> tests = {
+        {"parse GET request", test_parse_get_request},
+        {"parse GET request with query uses path only for routing",
+         test_parse_get_request_with_query_uses_path_only_for_routing},
+        {"parse POST with body", test_parse_post_with_body},
+        {"parse need more body", test_parse_need_more_body},
+        {"parse bad request line", test_parse_bad_request_line},
+        {"parse unsupported method", test_parse_unsupported_method},
+        {"parse unsupported http version", test_parse_unsupported_http_version},
+        {"parse invalid http version", test_parse_invalid_http_version},
+        {"parse invalid header", test_parse_invalid_header},
+        {"parse invalid header key char", test_parse_invalid_header_key_char},
+        {"parse header key space before colon rejected", test_parse_header_key_space_before_colon_rejected},
+        {"parse header key token chars allowed", test_parse_header_key_token_chars_allowed},
+        {"parse header value with ctl rejected", test_parse_header_value_with_ctl_rejected},
+        {"parse header value with del rejected", test_parse_header_value_with_del_rejected},
+        {"parse invalid content-length", test_parse_invalid_content_length},
+        {"parse content too large", test_parse_content_too_large},
+        {"parse content-length sum overflow rejected", test_parse_content_length_sum_overflow_rejected},
+        {"parse header too large", test_parse_header_too_large},
+        {"parse uri too long", test_parse_uri_too_long},
+        {"parse options asterisk-form", test_parse_options_asterisk_form},
+        {"parse get asterisk-form rejected", test_parse_get_asterisk_form_rejected},
+        {"parse post asterisk-form rejected", test_parse_post_asterisk_form_rejected},
+        {"parse origin-form without leading slash rejected", test_parse_origin_form_without_leading_slash_rejected},
+        {"parse connect requires authority-form", test_parse_connect_requires_authority_form},
+        {"parse connection close", test_parse_connection_close},
+        {"parse connection close in token list", test_parse_connection_close_in_token_list},
+        {"parse http10 connection keep-alive in token list", test_parse_http10_connection_keep_alive_in_token_list},
+        {"parse duplicate header rejected", test_parse_duplicate_header_rejected},
+        {"parse duplicate content-length same value", test_parse_duplicate_content_length_same_value},
+        {"parse duplicate content-length conflict", test_parse_duplicate_content_length_conflict},
+        {"parse transfer-encoding unsupported", test_parse_transfer_encoding_unsupported},
+        {"parse consumed bytes for pipeline", test_parse_consumed_bytes_for_pipeline},
+        {"parse http11 missing host rejected", test_parse_http11_missing_host_rejected},
+        {"parse http10 without host allowed", test_parse_http10_without_host_allowed},
+        {"parse empty host header rejected", test_parse_empty_host_header_rejected},
+        {"parse invalid host header rejected", test_parse_invalid_host_header_rejected},
+        {"parse invalid host port rejected", test_parse_invalid_host_port_rejected},
+        {"parse valid ipv4 host header", test_parse_valid_ipv4_host_header},
+        {"parse invalid ipv4 host header rejected", test_parse_invalid_ipv4_host_header_rejected},
+        {"parse ipv4 with leading zero rejected", test_parse_ipv4_with_leading_zero_rejected},
+        {"parse valid ipv6 host header", test_parse_valid_ipv6_host_header},
+        {"parse invalid ipv6 host header rejected", test_parse_invalid_ipv6_host_header_rejected},
+        {"parse out of range host port rejected", test_parse_out_of_range_host_port_rejected},
+        {"parse valid ipvfuture host header", test_parse_valid_ipvfuture_host_header},
+        {"parse invalid ipvfuture host header rejected", test_parse_invalid_ipvfuture_host_header_rejected},
+        {"parse absolute form host match", test_parse_absolute_form_host_match},
+        {"parse absolute form without path normalized to root",
+         test_parse_absolute_form_without_path_normalized_to_root},
+        {"parse absolute form keeps original request line", test_parse_absolute_form_keeps_original_request_line},
+        {"parse absolute form query only normalized with root",
+         test_parse_absolute_form_query_only_normalized_with_root},
+        {"parse absolute form host case insensitive match", test_parse_absolute_form_host_case_insensitive_match},
+        {"parse absolute form ipv6 compressed equivalent match",
+         test_parse_absolute_form_ipv6_compressed_equivalent_match},
+        {"parse absolute form ipv6 port numeric equivalent match",
+         test_parse_absolute_form_ipv6_port_numeric_equivalent_match},
+        {"parse absolute form host mismatch", test_parse_absolute_form_host_mismatch},
+        {"parse absolute form ipvfuture case insensitive match",
+         test_parse_absolute_form_ipvfuture_case_insensitive_match},
+        {"parse absolute form userinfo host match", test_parse_absolute_form_userinfo_host_match},
+        {"parse connect authority host match", test_parse_connect_authority_host_match},
+        {"parse connect authority host mismatch", test_parse_connect_authority_host_mismatch},
+    };
+
+    return nebula::testsupport::run_tests(tests);
+}
+
+}  // namespace
+
+int main() {
+    return nebula::testsupport::run_main(run_http_parser_tests);
+}
