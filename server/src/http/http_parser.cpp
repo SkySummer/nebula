@@ -506,7 +506,7 @@ ParseResult parse_error(HttpStatus status, std::string_view message = {}) {
     ParseResult result;
     result.status = ParseStatus::Error;
     result.http_status = status;
-    result.error = std::string(message);
+    result.error = message;
     return result;
 }
 
@@ -531,7 +531,7 @@ ParseResult parse_request_line(std::string_view header_block, HttpRequest& reque
                                std::size_t max_request_target_bytes) {
     request_line_end = header_block.find("\r\n");
     const std::string_view request_line = header_block.substr(0, request_line_content_end(header_block));
-    request.request_line = std::string(request_line);
+    request.request_line = request_line;
 
     const std::size_t method_end = request_line.find(' ');
     if (method_end == std::string_view::npos) {
@@ -578,7 +578,7 @@ ParseResult parse_request_line(std::string_view header_block, HttpRequest& reque
 ParseResult merge_header(HttpRequest& request, const std::string& key, std::string_view raw_value) {
     const auto header_it = request.headers.find(key);
     if (header_it == request.headers.end()) {
-        request.headers.emplace(key, std::string(raw_value));
+        request.headers.emplace(key, raw_value);
         return parse_complete();
     }
 
@@ -785,7 +785,7 @@ ParseResult parse_http_request(std::string_view buffer, std::size_t max_header_b
     }
 
     if (content_length > 0U) {
-        request.body = std::string(buffer.substr(header_bytes, content_length));
+        request.body = buffer.substr(header_bytes, content_length);
     }
 
     apply_connection_policy(request, version_text);

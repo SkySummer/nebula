@@ -67,7 +67,7 @@ HttpResponse make_plain_text_response(HttpStatus status, std::string body) {
 
 HttpResponse make_error_response(HttpStatus status, std::string body) {
     if (body.empty()) {
-        body = std::string(to_string(status));
+        body = to_string(status);
     }
     return make_plain_text_response(status, std::move(body));
 }

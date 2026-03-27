@@ -1,6 +1,21 @@
 #include "nebula/common/thread_pool.hpp"
 
+#include <cstdio>
+
+#include "nebula/common/logger.hpp"
+
 namespace nebula::common {
+
+namespace {
+
+void report_log_emit_error(const char* event) noexcept {
+    std::fputs("thread pool log emit failed: event=", stderr);
+    std::fputs(event != nullptr ? event : "unknown", stderr);
+    std::fputs(", error=logger_emit_failed, decision=ignore", stderr);
+    std::fputc('\n', stderr);
+}
+
+}  // namespace
 
 ThreadPool::ThreadPool(std::size_t worker_count) {
     if (worker_count == 0U) {
@@ -16,19 +31,27 @@ ThreadPool::ThreadPool(std::size_t worker_count) {
         stop();
         throw;
     }
+
+    try {
+        Logger::instance().info("thread pool started").field("count", workers_.size());
+    } catch (...) {
+        report_log_emit_error("thread_pool_started");
+    }
 }
 
-ThreadPool::~ThreadPool() {
+ThreadPool::~ThreadPool() noexcept {
     stop();
 }
 
-void ThreadPool::stop() {
+void ThreadPool::stop() noexcept {
+    std::size_t worker_count = 0;
     {
         std::lock_guard lock(mutex_);
         if (stopping_) {
             return;
         }
         stopping_ = true;
+        worker_count = workers_.size();
     }
 
     condition_.notify_all();
@@ -38,6 +61,12 @@ void ThreadPool::stop() {
         }
     }
     workers_.clear();
+
+    try {
+        Logger::instance().info("thread pool stopped").field("count", worker_count);
+    } catch (...) {
+        report_log_emit_error("thread_pool_stopped");
+    }
 }
 
 void ThreadPool::worker_loop() {

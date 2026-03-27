@@ -18,7 +18,7 @@ namespace nebula::common {
 class ThreadPool {
 public:
     explicit ThreadPool(std::size_t worker_count);
-    ~ThreadPool();
+    ~ThreadPool() noexcept;
 
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
@@ -43,7 +43,7 @@ public:
         return future;
     }
 
-    void stop();
+    void stop() noexcept;
 
 private:
     void worker_loop();
