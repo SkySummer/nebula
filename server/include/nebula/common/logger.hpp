@@ -24,7 +24,7 @@ enum class LogLevel : std::uint8_t {
     Error,
 };
 
-std::string_view to_string(LogLevel level);
+[[nodiscard]] std::string_view to_string(LogLevel level);
 
 struct Field {
     Field(std::string key_in, std::string value_in, std::string message_in = {})

@@ -2,7 +2,8 @@
 port = 8080
 backlog = 1024
 max_connections = 4096
-worker_threads = 0
+sub_reactor_count = 0
+worker_thread_count = 0
 manage_signals = true
 
 [logger]

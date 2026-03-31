@@ -4,11 +4,10 @@
 #include <atomic>
 #include <csignal>
 #include <cstdint>
+#include <functional>
 #include <thread>
 
 namespace nebula::server {
-
-class HttpServer;
 
 class SignalHandler {
 public:
@@ -21,7 +20,7 @@ public:
     SignalHandler& operator=(SignalHandler&&) = delete;
 
     [[nodiscard]] bool enabled() const;
-    void start(HttpServer& server);
+    void start(std::function<void()> stop_callback);
     void stop() noexcept;
 
 private:
@@ -32,9 +31,9 @@ private:
     void close_signal_pipe() noexcept;
     void wake_wait_loop() const noexcept;
     static bool handle_non_readable_events(int fd, std::int16_t events) noexcept;
-    static bool handle_signal_event(unsigned char signal, HttpServer& server) noexcept;
-    bool drain_signal_pipe(HttpServer& server) noexcept;
-    void wait_loop(HttpServer& server) noexcept;
+    static bool handle_signal_event(unsigned char signal, const std::function<void()>& stop_callback) noexcept;
+    bool drain_signal_pipe() noexcept;
+    void wait_loop() noexcept;
 
     sigset_t signal_set_{};
     std::atomic<bool> keep_waiting_ = false;
@@ -45,6 +44,7 @@ private:
     int signal_pipe_write_fd_ = -1;
     bool signal_set_ready_ = false;
     bool signal_handlers_installed_ = false;
+    std::function<void()> stop_callback_;
 };
 
 }  // namespace nebula::server

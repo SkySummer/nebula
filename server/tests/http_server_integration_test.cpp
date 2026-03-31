@@ -7,10 +7,13 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <memory>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -21,6 +24,7 @@
 #include <unistd.h>
 
 #include "nebula/common/logger.hpp"
+#include "nebula/http/router.hpp"
 #include "nebula_tests/test_support.hpp"
 
 namespace {
@@ -29,11 +33,49 @@ using nebula::testsupport::capture_stderr;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_not_contains;
 using nebula::testsupport::expect_true;
-using RunResult = nebula::server::HttpServer::RunResult;
+using RunResult = nebula::server::RunResult;
+
+std::shared_ptr<nebula::http::Router> build_default_router() {
+    auto router = std::make_shared<nebula::http::Router>();
+
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/",
+                                  [](const nebula::http::HttpRequest&) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::TemporaryRedirect;
+                                      response.headers.emplace("Location", "/healthz");
+                                      return response;
+                                  }),
+                "add default root route should succeed");
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/healthz",
+                                  [](const nebula::http::HttpRequest&) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "application/json");
+                                      response.body = R"({"status":"ok"})";
+                                      return response;
+                                  }),
+                "add default healthz route should succeed");
+    expect_true(router->add_route(nebula::http::HttpMethod::Post, "/echo",
+                                  [](const nebula::http::HttpRequest& request) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "application/json");
+                                      response.body = request.body;
+                                      return response;
+                                  }),
+                "add default echo route should succeed");
+
+    return router;
+}
 
 bool is_nonfatal_run_result(RunResult result) {
     return result == RunResult::StartCanceled || result == RunResult::GracefulCompleted ||
            result == RunResult::ForcedByTimeout;
+}
+
+nebula::server::HttpServerRuntime build_runtime(nebula::server::ServerConfig config,
+                                                std::shared_ptr<nebula::http::Router> router) {
+    return nebula::server::HttpServerBuilder().with_config(std::move(config)).with_router(std::move(router)).build();
 }
 
 sockaddr* as_sockaddr(sockaddr_in& addr) {
@@ -206,7 +248,7 @@ std::size_t count_occurrences(std::string_view text, std::string_view needle) {
     }
 }
 
-void wait_until_server_ready(nebula::server::HttpServer& server) {
+void wait_until_server_ready(nebula::server::HttpServerRuntime& server) {
     using namespace std::chrono_literals;
 
     for (int idx = 0; idx < 200; ++idx) {
@@ -221,7 +263,8 @@ void wait_until_server_ready(nebula::server::HttpServer& server) {
 
 class ServerThreadGuard {
 public:
-    ServerThreadGuard(nebula::server::HttpServer& server, std::thread& thread) : server_(server), thread_(thread) {}
+    ServerThreadGuard(nebula::server::HttpServerRuntime& server, std::thread& thread)
+        : server_(server), thread_(thread) {}
 
     ServerThreadGuard(const ServerThreadGuard&) = delete;
     ServerThreadGuard& operator=(const ServerThreadGuard&) = delete;
@@ -229,14 +272,14 @@ public:
     ServerThreadGuard& operator=(ServerThreadGuard&&) = delete;
 
     ~ServerThreadGuard() {
-        server_.stop();
+        server_.request_stop();
         if (thread_.joinable()) {
             thread_.join();
         }
     }
 
 private:
-    nebula::server::HttpServer& server_;
+    nebula::server::HttpServerRuntime& server_;
     std::thread& thread_;
 };
 
@@ -309,10 +352,10 @@ private:
 void test_healthz_endpoint() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -339,8 +382,8 @@ void test_signal_mask_restored_after_http_server_destroyed() {
     {
         nebula::server::ServerConfig config;
         config.port = 0;
-        config.worker_threads = 1;
-        nebula::server::HttpServer server(config);
+        config.worker_thread_count = 1;
+        auto server = build_runtime(config, build_default_router());
     }
 
     sigset_t after_mask{};
@@ -368,11 +411,11 @@ void test_signal_shutdown_remains_available_after_restart() {
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
     const auto run_cycle_and_stop_with_sigterm = [&server](std::string_view cycle_name) {
-        std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.start(); });
+        std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
 
         wait_until_server_ready(server);
 
@@ -381,7 +424,7 @@ void test_signal_shutdown_remains_available_after_restart() {
 
         const bool stopped_by_signal = (start_future.wait_for(2s) == std::future_status::ready);
         if (!stopped_by_signal) {
-            server.stop();
+            server.request_stop();
         }
 
         expect_true(stopped_by_signal, std::string(cycle_name) + " cycle should stop after SIGTERM");
@@ -420,10 +463,10 @@ void test_signal_shutdown_with_preexisting_unmasked_thread() {
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.start(); });
+    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
     wait_until_server_ready(server);
 
     const int raise_result = ::kill(::getpid(), SIGTERM);
@@ -431,7 +474,7 @@ void test_signal_shutdown_with_preexisting_unmasked_thread() {
 
     const bool stopped_by_signal = (start_future.wait_for(2s) == std::future_status::ready);
     if (!stopped_by_signal) {
-        server.stop();
+        server.request_stop();
     }
 
     expect_true(stopped_by_signal, "server should stop after SIGTERM with preexisting unmasked thread");
@@ -448,10 +491,10 @@ void test_signal_shutdown_with_preexisting_unmasked_thread() {
 void test_healthz_endpoint_absolute_form() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -472,10 +515,10 @@ void test_healthz_endpoint_absolute_form() {
 void test_healthz_endpoint_with_query() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -496,10 +539,10 @@ void test_healthz_endpoint_with_query() {
 void test_root_redirects_to_healthz() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -520,21 +563,22 @@ void test_root_redirects_to_healthz() {
 void test_head_method_suppresses_body() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
 
     const std::string route_body = "head-body-should-not-appear";
-    expect_true(server.add_route(nebula::http::HttpMethod::Head, "/headz",
-                                 [route_body](const nebula::http::HttpRequest&) {
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = route_body;
-                                     return response;
-                                 }),
+    expect_true(router->add_route(nebula::http::HttpMethod::Head, "/headz",
+                                  [route_body](const nebula::http::HttpRequest&) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = route_body;
+                                      return response;
+                                  }),
                 "add head route should succeed");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -563,10 +607,10 @@ void test_head_method_suppresses_body() {
 void test_echo_endpoint() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -596,10 +640,10 @@ void test_request_completed_log_uses_raw_request_line() {
 
         nebula::server::ServerConfig config;
         config.port = 0;
-        config.worker_threads = 2;
-        nebula::server::HttpServer server(config);
+        config.worker_thread_count = 2;
+        auto server = build_runtime(config, build_default_router());
 
-        std::thread server_thread([&server]() { server.start(); });
+        std::thread server_thread([&server]() { server.run(); });
         ServerThreadGuard server_guard(server, server_thread);
         wait_until_server_ready(server);
 
@@ -625,13 +669,74 @@ void test_request_completed_log_uses_raw_request_line() {
     expect_contains(stderr_text, "latency_ms=", "latency field should be logged");
 }
 
+void test_connections_dispatched_to_multiple_sub_reactors() {
+    const nebula::testsupport::TempDir log_dir("nebula-http-server-sub-reactor-dispatch");
+
+    const std::string stderr_text = capture_stderr([&]() {
+        nebula::common::Logger::instance().init(nebula::common::LogLevel::Debug, log_dir.path(), true);
+
+        nebula::server::ServerConfig config;
+        config.port = 0;
+        config.sub_reactor_count = 2;
+        config.worker_thread_count = 2;
+        auto server = build_runtime(config, build_default_router());
+
+        std::thread server_thread([&server]() { server.run(); });
+        ServerThreadGuard server_guard(server, server_thread);
+        wait_until_server_ready(server);
+
+        for (int idx = 0; idx < 4; ++idx) {
+            const int fd = connect_localhost(server.listening_port());
+            expect_true(fd >= 0, "connect should succeed");
+
+            const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+            expect_true(send_all(fd, request), "send request should succeed");
+
+            std::string carry;
+            const std::string response = read_one_response(fd, carry);
+            ::close(fd);
+            expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
+        }
+    });
+
+    nebula::common::Logger::instance().init(nebula::common::LogLevel::Warning, log_dir.path(), false);
+
+    expect_contains(stderr_text, "connection accepted: fd=", "connection accepted log should be emitted");
+    expect_contains(stderr_text, "reactor_id=0", "dispatch should include reactor_id 0");
+    expect_contains(stderr_text, "reactor_id=1", "dispatch should include reactor_id 1");
+}
+
+void test_sub_reactor_count_zero_uses_default_value_in_constructor() {
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.sub_reactor_count = 0;
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
+
+    std::thread server_thread([&server]() { server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    const int fd = connect_localhost(server.listening_port());
+    expect_true(fd >= 0, "connect should succeed");
+
+    const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    expect_true(send_all(fd, request), "send request should succeed");
+
+    std::string carry;
+    const std::string response = read_one_response(fd, carry);
+    ::close(fd);
+
+    expect_contains(response, "HTTP/1.1 200 OK", "sub_reactor_count zero should still serve requests");
+}
+
 void test_keep_alive_two_requests() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -662,21 +767,22 @@ void test_client_reset_during_response_keeps_server_running() {
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
 
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, "/slow-reset",
-                                 [](const nebula::http::HttpRequest&) {
-                                     std::this_thread::sleep_for(150ms);
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "slow-reset";
-                                     return response;
-                                 }),
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-reset",
+                                  [](const nebula::http::HttpRequest&) {
+                                      std::this_thread::sleep_for(150ms);
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "slow-reset";
+                                      return response;
+                                  }),
                 "add slow-reset route should succeed");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -707,21 +813,22 @@ void test_stale_async_response_not_delivered_to_new_connection() {
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
 
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, "/slow-fd-reuse",
-                                 [](const nebula::http::HttpRequest&) {
-                                     std::this_thread::sleep_for(250ms);
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "slow-fd-reuse";
-                                     return response;
-                                 }),
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-fd-reuse",
+                                  [](const nebula::http::HttpRequest&) {
+                                      std::this_thread::sleep_for(250ms);
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "slow-fd-reuse";
+                                      return response;
+                                  }),
                 "add slow-fd-reuse route should succeed");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -755,10 +862,10 @@ void test_stale_async_response_not_delivered_to_new_connection() {
 void test_concurrent_requests() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 4;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 4;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -796,15 +903,15 @@ void test_concurrent_start_allows_only_one_success() {
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
     std::promise<void> launch;
     const std::shared_future<void> go = launch.get_future().share();
 
     const auto start_once = [&server, go]() {
         go.wait();
-        return server.start();
+        return server.run();
     };
 
     std::future<RunResult> first = std::async(std::launch::async, start_once);
@@ -823,7 +930,7 @@ void test_concurrent_start_allows_only_one_success() {
         std::this_thread::sleep_for(10ms);
     }
 
-    server.stop();
+    server.request_stop();
     const RunResult first_result = first.get();
     const RunResult second_result = second.get();
 
@@ -835,19 +942,51 @@ void test_concurrent_start_allows_only_one_success() {
     expect_true(!server.is_running(), "server should stop after stop request");
 }
 
+void test_start_rejected_while_running_does_not_break_response_submission() {
+    using namespace std::chrono_literals;
+
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
+
+    std::thread server_thread([&server]() { server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    std::future<RunResult> rejected_start = std::async(std::launch::async, [&server]() { return server.run(); });
+    expect_true(rejected_start.wait_for(1s) == std::future_status::ready,
+                "concurrent start while running should return quickly");
+    expect_true(rejected_start.get() == RunResult::StartRejected, "concurrent start while running should be rejected");
+
+    const int fd = connect_localhost(server.listening_port());
+    expect_true(fd >= 0, "connect after rejected concurrent start should succeed");
+
+    const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    expect_true(send_all(fd, request), "send request after rejected concurrent start should succeed");
+    const int events = poll_socket_events(fd, 1s);
+    expect_true((events & POLLIN) != 0, "server should still produce a response after rejected concurrent start");
+
+    std::string carry;
+    const std::string response = read_one_response(fd, carry);
+    ::close(fd);
+
+    expect_contains(response, "HTTP/1.1 200 OK", "server should still serve healthz after rejected concurrent start");
+}
+
 void test_early_stop_during_start_leaves_server_reusable() {
     using namespace std::chrono_literals;
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.start(); });
+    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
 
     bool start_finished = false;
     for (int idx = 0; idx < 300; ++idx) {
-        server.stop();
+        server.request_stop();
         if (start_future.wait_for(10ms) == std::future_status::ready) {
             start_finished = true;
             break;
@@ -860,7 +999,7 @@ void test_early_stop_during_start_leaves_server_reusable() {
     expect_true(!server.is_running(), "server should not be running after early stop");
     expect_true(server.listening_port() == 0, "listening port should be cleared after early stop");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -882,11 +1021,11 @@ void test_single_prestart_stop_cancels_start_once_and_server_remains_reusable() 
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    server.stop();
-    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.start(); });
+    server.request_stop();
+    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
     expect_true(start_future.wait_for(1s) == std::future_status::ready,
                 "prestart stop should make start return quickly");
     const RunResult result = start_future.get();
@@ -894,7 +1033,7 @@ void test_single_prestart_stop_cancels_start_once_and_server_remains_reusable() 
     expect_true(!server.is_running(), "server should stay stopped after prestart stop");
     expect_true(server.listening_port() == 0, "listening port should stay zero after prestart stop");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -910,25 +1049,95 @@ void test_single_prestart_stop_cancels_start_once_and_server_remains_reusable() 
     expect_contains(response, "HTTP/1.1 200 OK", "server should be reusable after prestart stop cancellation");
 }
 
+void test_builder_server_supports_prestart_cancel() {
+    using namespace std::chrono_literals;
+
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    config.manage_signals = false;
+    auto server = build_runtime(config, build_default_router());
+    server.request_stop();
+
+    std::future<RunResult> run_future = std::async(std::launch::async, [&server]() { return server.run(); });
+    expect_true(run_future.wait_for(1s) == std::future_status::ready,
+                "builder server should return quickly after prestart stop");
+    const RunResult result = run_future.get();
+    expect_true(result == RunResult::StartCanceled, "prestart stop should cancel builder server start");
+    expect_true(!server.is_running(), "builder server should not keep running after prestart stop");
+    expect_true(server.listening_port() == 0, "builder server listening port should remain zero");
+}
+
+void test_builder_build_without_router_throws() {
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    config.manage_signals = false;
+
+    bool thrown = false;
+    try {
+        [[maybe_unused]] auto server = nebula::server::HttpServerBuilder().with_config(config).build();
+    } catch (const std::invalid_argument& error) {
+        thrown = true;
+        expect_contains(error.what(), "router_missing", "missing router should expose stable error code");
+    }
+
+    expect_true(thrown, "builder should reject missing router");
+}
+
+void test_builder_build_supports_multiple_runtime_instances_from_same_builder() {
+    using namespace std::chrono_literals;
+
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    config.manage_signals = false;
+
+    auto builder = nebula::server::HttpServerBuilder().with_config(config).with_router(build_default_router());
+    auto server1 = builder.build();
+    auto server2 = builder.build();
+
+    RunResult run_result1 = RunResult::FatalError;
+    std::thread thread1([&server1, &run_result1]() { run_result1 = server1.run(); });
+    ServerThreadGuard guard1(server1, thread1);
+    wait_until_server_ready(server1);
+    server1.request_stop();
+    if (thread1.joinable()) {
+        thread1.join();
+    }
+    expect_true(is_nonfatal_run_result(run_result1), "first server built from builder should stop non-fatally");
+
+    RunResult run_result2 = RunResult::FatalError;
+    std::thread thread2([&server2, &run_result2]() { run_result2 = server2.run(); });
+    ServerThreadGuard guard2(server2, thread2);
+    wait_until_server_ready(server2);
+    server2.request_stop();
+    if (thread2.joinable()) {
+        thread2.join();
+    }
+    expect_true(is_nonfatal_run_result(run_result2), "second server built from same builder should stop non-fatally");
+}
+
 void test_graceful_stop_completes_inflight_request() {
     using namespace std::chrono_literals;
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, "/slow-graceful",
-                                 [](const nebula::http::HttpRequest&) {
-                                     std::this_thread::sleep_for(250ms);
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "slow-graceful";
-                                     return response;
-                                 }),
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-graceful",
+                                  [](const nebula::http::HttpRequest&) {
+                                      std::this_thread::sleep_for(250ms);
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "slow-graceful";
+                                      return response;
+                                  }),
                 "add slow-graceful route should succeed");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -943,7 +1152,7 @@ void test_graceful_stop_completes_inflight_request() {
         std::async(std::launch::async, [fd, &carry]() { return read_one_response(fd, carry); });
 
     std::this_thread::sleep_for(30ms);
-    server.stop();
+    server.request_stop();
 
     expect_true(response_future.wait_for(2s) == std::future_status::ready,
                 "inflight request should complete before graceful stop");
@@ -959,20 +1168,21 @@ void test_graceful_stop_rejects_new_connections_quickly() {
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, "/slow-stop-gate",
-                                 [](const nebula::http::HttpRequest&) {
-                                     std::this_thread::sleep_for(300ms);
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "slow-stop-gate";
-                                     return response;
-                                 }),
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-gate",
+                                  [](const nebula::http::HttpRequest&) {
+                                      std::this_thread::sleep_for(300ms);
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "slow-stop-gate";
+                                      return response;
+                                  }),
                 "add slow-stop-gate route should succeed");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -988,7 +1198,7 @@ void test_graceful_stop_rejects_new_connections_quickly() {
 
     std::this_thread::sleep_for(30ms);
     const auto stop_requested_at = std::chrono::steady_clock::now();
-    server.stop();
+    server.request_stop();
 
     bool rejected = false;
     for (int idx = 0; idx < 80; ++idx) {
@@ -1018,22 +1228,23 @@ void test_graceful_stop_timeout_forces_close_in_bounded_time() {
 
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 1;
+    config.worker_thread_count = 1;
     config.graceful_shutdown_timeout = 250ms;
-    nebula::server::HttpServer server(config);
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, "/slow-stop-timeout",
-                                 [](const nebula::http::HttpRequest&) {
-                                     std::this_thread::sleep_for(2s);
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "slow-stop-timeout";
-                                     return response;
-                                 }),
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-timeout",
+                                  [](const nebula::http::HttpRequest&) {
+                                      std::this_thread::sleep_for(2s);
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "slow-stop-timeout";
+                                      return response;
+                                  }),
                 "add slow-stop-timeout route should succeed");
 
     RunResult run_result = RunResult::FatalError;
-    std::thread server_thread([&server, &run_result]() { run_result = server.start(); });
+    std::thread server_thread([&server, &run_result]() { run_result = server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1044,7 +1255,7 @@ void test_graceful_stop_timeout_forces_close_in_bounded_time() {
 
     std::this_thread::sleep_for(60ms);
     const auto stop_started_at = std::chrono::steady_clock::now();
-    server.stop();
+    server.request_stop();
     if (server_thread.joinable()) {
         server_thread.join();
     }
@@ -1057,13 +1268,101 @@ void test_graceful_stop_timeout_forces_close_in_bounded_time() {
     expect_true(run_result == RunResult::ForcedByTimeout, "graceful stop timeout should report forced_by_timeout");
 }
 
+void test_graceful_stop_low_timeout_without_inflight_completes() {
+    using namespace std::chrono_literals;
+
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 1;
+    config.graceful_shutdown_timeout = 30ms;
+    auto server = build_runtime(config, build_default_router());
+
+    RunResult run_result = RunResult::FatalError;
+    std::thread server_thread([&server, &run_result]() { run_result = server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    const auto stop_started_at = std::chrono::steady_clock::now();
+    server.request_stop();
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
+    const auto stop_elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_started_at);
+
+    expect_true(run_result == RunResult::GracefulCompleted,
+                "graceful stop with low timeout should complete without forced close when no inflight work exists");
+    expect_true(stop_elapsed < 500ms, "graceful stop without inflight work should complete quickly");
+}
+
+void test_graceful_stop_client_disconnect_does_not_timeout_on_late_response() {
+    using namespace std::chrono_literals;
+
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 1;
+    config.graceful_shutdown_timeout = 350ms;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
+
+    std::promise<void> handler_started_promise;
+    std::shared_future<void> handler_started = handler_started_promise.get_future().share();
+    std::promise<void> release_handler_promise;
+    std::shared_future<void> release_handler = release_handler_promise.get_future().share();
+
+    expect_true(
+        router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-reset",
+                          [release_handler, &handler_started_promise](const nebula::http::HttpRequest&) mutable {
+                              handler_started_promise.set_value();
+
+                              release_handler.wait_for(2s);
+
+                              nebula::http::HttpResponse response;
+                              response.status = nebula::http::HttpStatus::OK;
+                              response.headers.emplace("Content-Type", "text/plain");
+                              response.body = "slow-stop-reset";
+                              return response;
+                          }),
+        "add slow-stop-reset route should succeed");
+
+    RunResult run_result = RunResult::FatalError;
+    std::thread server_thread([&server, &run_result]() { run_result = server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    const int fd = connect_localhost(server.listening_port());
+    expect_true(fd >= 0, "connect should succeed");
+    const std::string request = "GET /slow-stop-reset HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
+    expect_true(send_all(fd, request), "slow reset request should send");
+    expect_true(handler_started.wait_for(1s) == std::future_status::ready, "handler should start before stop");
+
+    close_with_reset(fd);
+
+    const auto stop_started_at = std::chrono::steady_clock::now();
+    server.request_stop();
+    std::this_thread::sleep_for(30ms);
+    release_handler_promise.set_value();
+
+    if (server_thread.joinable()) {
+        server_thread.join();
+    }
+    const auto stop_elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_started_at);
+
+    expect_true(stop_elapsed < config.graceful_shutdown_timeout,
+                "graceful stop should finish before timeout when disconnected request finishes late");
+    expect_true(run_result == RunResult::GracefulCompleted,
+                "late response after client disconnect should not force graceful stop timeout");
+}
+
 void test_add_route_while_running() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 4;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 4;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1084,23 +1383,23 @@ void test_add_route_while_running() {
     const std::string before_response = send_request(request);
     expect_contains(before_response, "HTTP/1.1 404 Not Found", "new route should be 404 before add_route");
 
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, path,
-                                 [](const nebula::http::HttpRequest&) {
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "dynamic route ready";
-                                     return response;
-                                 }),
-                "first add route should succeed");
-    expect_true(!server.add_route(nebula::http::HttpMethod::Get, path,
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, path,
                                   [](const nebula::http::HttpRequest&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "duplicate";
+                                      response.body = "dynamic route ready";
                                       return response;
                                   }),
+                "first add route should succeed");
+    expect_true(!router->add_route(nebula::http::HttpMethod::Get, path,
+                                   [](const nebula::http::HttpRequest&) {
+                                       nebula::http::HttpResponse response;
+                                       response.status = nebula::http::HttpStatus::OK;
+                                       response.headers.emplace("Content-Type", "text/plain");
+                                       response.body = "duplicate";
+                                       return response;
+                                   }),
                 "duplicate add route should fail");
 
     const std::string after_response = send_request(request);
@@ -1111,10 +1410,11 @@ void test_add_route_while_running() {
 void test_del_route_while_running() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 4;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 4;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1133,8 +1433,8 @@ void test_del_route_while_running() {
     const std::string before_response = send_request(request);
     expect_contains(before_response, "HTTP/1.1 200 OK", "healthz should be reachable before del_route");
 
-    expect_true(server.del_route(nebula::http::HttpMethod::Get, "/healthz"), "del existing route should succeed");
-    expect_true(!server.del_route(nebula::http::HttpMethod::Get, "/healthz"),
+    expect_true(router->del_route(nebula::http::HttpMethod::Get, "/healthz"), "del existing route should succeed");
+    expect_true(!router->del_route(nebula::http::HttpMethod::Get, "/healthz"),
                 "del same route twice should report false");
 
     const std::string after_response = send_request(request);
@@ -1144,10 +1444,11 @@ void test_del_route_while_running() {
 void test_mod_route_while_running() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 4;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 4;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1166,23 +1467,23 @@ void test_mod_route_while_running() {
     const std::string before_response = send_request(request);
     expect_contains(before_response, R"({"status":"ok"})", "healthz default body should exist before mod_route");
 
-    expect_true(server.mod_route(nebula::http::HttpMethod::Get, "/healthz",
-                                 [](const nebula::http::HttpRequest&) {
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "healthz modified";
-                                     return response;
-                                 }),
-                "mod existing route should succeed");
-    expect_true(!server.mod_route(nebula::http::HttpMethod::Get, "/missing",
+    expect_true(router->mod_route(nebula::http::HttpMethod::Get, "/healthz",
                                   [](const nebula::http::HttpRequest&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "missing";
+                                      response.body = "healthz modified";
                                       return response;
                                   }),
+                "mod existing route should succeed");
+    expect_true(!router->mod_route(nebula::http::HttpMethod::Get, "/missing",
+                                   [](const nebula::http::HttpRequest&) {
+                                       nebula::http::HttpResponse response;
+                                       response.status = nebula::http::HttpStatus::OK;
+                                       response.headers.emplace("Content-Type", "text/plain");
+                                       response.body = "missing";
+                                       return response;
+                                   }),
                 "mod missing route should fail");
 
     const std::string after_response = send_request(request);
@@ -1193,29 +1494,30 @@ void test_mod_route_while_running() {
 void test_method_not_allowed_includes_allow_header() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
 
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, "/allow-check",
-                                 [](const nebula::http::HttpRequest&) {
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "get";
-                                     return response;
-                                 }),
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/allow-check",
+                                  [](const nebula::http::HttpRequest&) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "get";
+                                      return response;
+                                  }),
                 "add get route should succeed");
-    expect_true(server.add_route(nebula::http::HttpMethod::Post, "/allow-check",
-                                 [](const nebula::http::HttpRequest&) {
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "post";
-                                     return response;
-                                 }),
+    expect_true(router->add_route(nebula::http::HttpMethod::Post, "/allow-check",
+                                  [](const nebula::http::HttpRequest&) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "post";
+                                      return response;
+                                  }),
                 "add post route should succeed");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1237,10 +1539,10 @@ void test_method_not_allowed_includes_allow_header() {
 void test_chunked_request_rejected() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1262,10 +1564,10 @@ void test_chunked_request_rejected() {
 void test_missing_host_returns_400() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1286,10 +1588,10 @@ void test_missing_host_returns_400() {
 void test_empty_host_returns_400() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1310,10 +1612,10 @@ void test_empty_host_returns_400() {
 void test_unknown_method_returns_501() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1334,10 +1636,10 @@ void test_unknown_method_returns_501() {
 void test_unsupported_http_version_returns_505() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1358,10 +1660,10 @@ void test_unsupported_http_version_returns_505() {
 void test_invalid_http_version_returns_400() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1382,11 +1684,11 @@ void test_invalid_http_version_returns_400() {
 void test_content_too_large_returns_413() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
+    config.worker_thread_count = 2;
     config.max_body_bytes = 8U;
-    nebula::server::HttpServer server(config);
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1409,11 +1711,11 @@ void test_content_too_large_returns_413() {
 void test_header_too_large_returns_431() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
+    config.worker_thread_count = 2;
     config.max_header_bytes = 128U;
-    nebula::server::HttpServer server(config);
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1435,11 +1737,11 @@ void test_header_too_large_returns_431() {
 void test_uri_too_long_returns_414() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
+    config.worker_thread_count = 2;
     config.max_request_target_bytes = 8U;
-    nebula::server::HttpServer server(config);
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1460,10 +1762,10 @@ void test_uri_too_long_returns_414() {
 void test_head_parse_error_suppresses_body() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1491,10 +1793,10 @@ void test_head_parse_error_suppresses_body() {
 void test_parse_error_responds_once_before_close() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
-    nebula::server::HttpServer server(config);
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1523,23 +1825,24 @@ void test_parse_error_responds_once_before_close() {
 void test_processing_state_pending_buffer_limit() {
     nebula::server::ServerConfig config;
     config.port = 0;
-    config.worker_threads = 2;
+    config.worker_thread_count = 2;
     config.max_header_bytes = 96U;
     config.max_body_bytes = 32U;
-    nebula::server::HttpServer server(config);
-    expect_true(server.add_route(nebula::http::HttpMethod::Get, "/slow",
-                                 [](const nebula::http::HttpRequest&) {
-                                     std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow",
+                                  [](const nebula::http::HttpRequest&) {
+                                      std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
-                                     nebula::http::HttpResponse response;
-                                     response.status = nebula::http::HttpStatus::OK;
-                                     response.headers.emplace("Content-Type", "text/plain");
-                                     response.body = "slow";
-                                     return response;
-                                 }),
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "slow";
+                                      return response;
+                                  }),
                 "add slow route should succeed");
 
-    std::thread server_thread([&server]() { server.start(); });
+    std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
@@ -1578,18 +1881,31 @@ int run_http_server_integration_tests() {
         {"head method suppresses body", test_head_method_suppresses_body},
         {"echo endpoint", test_echo_endpoint},
         {"request completed log uses raw request line", test_request_completed_log_uses_raw_request_line},
+        {"connections dispatched to multiple sub reactors", test_connections_dispatched_to_multiple_sub_reactors},
+        {"io threads zero uses default value in constructor",
+         test_sub_reactor_count_zero_uses_default_value_in_constructor},
         {"keep alive two requests", test_keep_alive_two_requests},
         {"client reset during response keeps server running", test_client_reset_during_response_keeps_server_running},
         {"stale async response not delivered to new connection",
          test_stale_async_response_not_delivered_to_new_connection},
         {"concurrent requests", test_concurrent_requests},
         {"concurrent start allows only one success", test_concurrent_start_allows_only_one_success},
+        {"start rejected while running does not break response submission",
+         test_start_rejected_while_running_does_not_break_response_submission},
         {"early stop during start leaves server reusable", test_early_stop_during_start_leaves_server_reusable},
         {"single prestart stop cancels start once and server remains reusable",
          test_single_prestart_stop_cancels_start_once_and_server_remains_reusable},
+        {"builder server supports prestart cancel", test_builder_server_supports_prestart_cancel},
+        {"builder build without router throws", test_builder_build_without_router_throws},
+        {"builder build supports multiple runtime instances from same builder",
+         test_builder_build_supports_multiple_runtime_instances_from_same_builder},
         {"graceful stop completes inflight request", test_graceful_stop_completes_inflight_request},
         {"graceful stop rejects new connections quickly", test_graceful_stop_rejects_new_connections_quickly},
         {"graceful stop timeout forces close in bounded time", test_graceful_stop_timeout_forces_close_in_bounded_time},
+        {"graceful stop low timeout without inflight completes",
+         test_graceful_stop_low_timeout_without_inflight_completes},
+        {"graceful stop client disconnect does not timeout on late response",
+         test_graceful_stop_client_disconnect_does_not_timeout_on_late_response},
         {"add route while running", test_add_route_while_running},
         {"del route while running", test_del_route_while_running},
         {"mod route while running", test_mod_route_while_running},

@@ -25,7 +25,8 @@ const std::unordered_set<std::string> kKnownKeys = {
     "server.port",
     "server.backlog",
     "server.max_connections",
-    "server.worker_threads",
+    "server.sub_reactor_count",
+    "server.worker_thread_count",
     "server.manage_signals",
     "logger.level",
     "logger.dir",
@@ -215,12 +216,13 @@ bool apply_server_values(const Table& table, ServerConfig& config, ServerConfigL
     if (!assign_non_negative_integer(table, "server.max_connections", config.max_connections, result)) {
         return false;
     }
-    if (!assign_non_negative_integer(table, "server.worker_threads", config.worker_threads, result)) {
+    if (!assign_non_negative_integer(table, "server.sub_reactor_count", config.sub_reactor_count, result)) {
         return false;
     }
-    if (config.worker_threads == 0U) {
-        config.worker_threads = default_worker_threads();
+    if (!assign_non_negative_integer(table, "server.worker_thread_count", config.worker_thread_count, result)) {
+        return false;
     }
+    normalize_server_thread_counts(config);
     return assign_bool_value(table, "server.manage_signals", config.manage_signals, result);
 }
 

@@ -20,7 +20,7 @@ enum class HttpMethod : std::uint8_t {
     Trace,
 };
 
-std::string_view to_string(HttpMethod method);
+[[nodiscard]] std::string_view to_string(HttpMethod method);
 
 HttpMethod parse_method(std::string_view text);
 
@@ -89,7 +89,7 @@ enum class HttpStatus : std::uint16_t {
 
 int to_status_code(HttpStatus status);
 
-std::string_view to_string(HttpStatus status);
+[[nodiscard]] std::string_view to_string(HttpStatus status);
 
 using HeaderMap = std::unordered_map<std::string, std::string>;
 

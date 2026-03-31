@@ -32,7 +32,8 @@ void test_load_full_valid_config() {
                "port = 9090\n"
                "backlog = 2048\n"
                "max_connections = 5000\n"
-               "worker_threads = 6\n"
+               "sub_reactor_count = 3\n"
+               "worker_thread_count = 6\n"
                "manage_signals = false\n"
                "\n"
                "[logger]\n"
@@ -57,7 +58,8 @@ void test_load_full_valid_config() {
     expect_equal(config.port, static_cast<std::uint16_t>(9090), "port should map");
     expect_equal(config.backlog, 2048, "backlog should map");
     expect_equal(config.max_connections, static_cast<std::size_t>(5000), "max_connections should map");
-    expect_equal(config.worker_threads, static_cast<std::size_t>(6), "worker_threads should map");
+    expect_equal(config.sub_reactor_count, static_cast<std::size_t>(3), "sub_reactor_count should map");
+    expect_equal(config.worker_thread_count, static_cast<std::size_t>(6), "worker_thread_count should map");
     expect_true(!config.manage_signals, "manage_signals should map");
     expect_equal(config.log_level, LogLevel::Warning, "log level should parse case-insensitive");
     expect_equal(config.log_dir.string(), std::string("runtime/custom-logs"), "log_dir should map");
@@ -71,18 +73,32 @@ void test_load_full_valid_config() {
     expect_equal(config.max_body_bytes, static_cast<std::size_t>(8192), "max_body_bytes should map");
 }
 
-void test_worker_threads_zero_maps_to_default_auto_value() {
+void test_worker_thread_count_zero_maps_to_default_auto_value() {
     const TempDir dir("nebula-server-config-worker-threads-zero");
     const std::filesystem::path file = dir.path() / "server.toml";
     write_file(file,
                "[server]\n"
-               "worker_threads = 0\n");
+               "worker_thread_count = 0\n");
 
     const nebula::server::ServerConfigLoadResult loaded(file);
-    expect_true(loaded.ok, "worker_threads zero should load");
-    expect_equal(loaded.source, ServerConfigSource::File, "worker_threads zero should keep file source");
-    expect_equal(loaded.config.worker_threads, nebula::server::default_worker_threads(),
-                 "worker_threads zero should map to default auto value");
+    expect_true(loaded.ok, "worker_thread_count zero should load");
+    expect_equal(loaded.source, ServerConfigSource::File, "worker_thread_count zero should keep file source");
+    expect_equal(loaded.config.worker_thread_count, nebula::server::default_worker_thread_count(),
+                 "worker_thread_count zero should map to default auto value");
+}
+
+void test_sub_reactor_count_zero_maps_to_default_auto_value() {
+    const TempDir dir("nebula-server-config-io-threads-zero");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[server]\n"
+               "sub_reactor_count = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(loaded.ok, "sub_reactor_count zero should load");
+    expect_equal(loaded.source, ServerConfigSource::File, "sub_reactor_count zero should keep file source");
+    expect_equal(loaded.config.sub_reactor_count, nebula::server::default_sub_reactor_count(),
+                 "sub_reactor_count zero should map to default auto value");
 }
 
 void test_unknown_key_rejected() {
@@ -161,7 +177,8 @@ void test_missing_file_fails() {
 int run_server_config_loader_tests() {
     const std::vector<nebula::testsupport::TestCase> tests = {
         {"load full valid config", test_load_full_valid_config},
-        {"worker threads zero maps to default auto value", test_worker_threads_zero_maps_to_default_auto_value},
+        {"io threads zero maps to default auto value", test_sub_reactor_count_zero_maps_to_default_auto_value},
+        {"worker threads zero maps to default auto value", test_worker_thread_count_zero_maps_to_default_auto_value},
         {"unknown key rejected", test_unknown_key_rejected},
         {"multiple unknown keys report stable first line", test_multiple_unknown_keys_report_stable_first_line},
         {"type mismatch rejected", test_type_mismatch_rejected},

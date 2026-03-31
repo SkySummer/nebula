@@ -41,6 +41,7 @@ if (BUILD_TESTING)
         add_test(NAME ${target_name} COMMAND ${target_name})
     endfunction()
 
+    add_nebula_test(eventfd_utils_test eventfd_utils_test.cpp)
     add_nebula_test(http_parser_test http_parser_test.cpp)
     add_nebula_test(http_response_writer_test http_response_writer_test.cpp)
     add_nebula_test(http_server_integration_test http_server_integration_test.cpp)
