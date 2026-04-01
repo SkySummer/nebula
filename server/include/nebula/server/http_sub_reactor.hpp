@@ -6,12 +6,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "nebula/http/http_parser.hpp"
 #include "nebula/http/http_types.hpp"
 #include "nebula/net/epoll_loop.hpp"
 #include "nebula/server/http_reactor_tasks.hpp"
@@ -76,6 +78,8 @@ private:
         std::string write_buffer;
         bool close_after_write = false;
         bool processing = false;
+        std::optional<std::chrono::steady_clock::time_point> active_request_started_at;
+        http::HttpRequestParseContext parse_context;
         std::chrono::steady_clock::time_point last_active;
     };
     using PendingResponse = ReactorResponseTask;
@@ -101,8 +105,14 @@ private:
     void drain_pending_responses();
     void handle_client_event(int fd, std::uint32_t events);
     void handle_readable(Connection& connection);
+    void parse_next_request_if_ready(Connection& connection);
+    [[nodiscard]] bool append_read_data(Connection& connection, const char* data, std::size_t read_n,
+                                        std::size_t pending_limit);
+    void handle_pending_bytes_exceeded(Connection& connection, std::size_t pending_limit);
+    [[nodiscard]] bool handle_recv_error(Connection& connection, int err, bool& should_break);
     void handle_writable(Connection& connection);
-    void schedule_request(Connection& connection, http::HttpRequest request, std::size_t request_bytes);
+    void schedule_request(Connection& connection, http::HttpRequest request, std::size_t request_bytes,
+                          std::chrono::steady_clock::time_point request_started_at);
     void parse_next_request(Connection& connection);
 
     void enqueue_error_response(int fd, std::uint64_t token, http::HttpStatus status, std::string body,

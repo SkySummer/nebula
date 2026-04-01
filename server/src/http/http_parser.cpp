@@ -643,13 +643,206 @@ ParseResult parse_headers(std::string_view header_block, std::size_t request_lin
     return parse_complete();
 }
 
-ParseResult resolve_content_length(const HttpRequest& request, std::size_t max_body_bytes,
-                                   std::size_t& content_length) {
-    if (request.headers.contains("transfer-encoding")) {
-        return parse_error(HttpStatus::NotImplemented, "Unsupported Transfer-Encoding");
+enum class RequestBodyEncoding : std::uint8_t {
+    ContentLength,
+    Chunked,
+};
+
+struct RequestBodyResolution {
+    RequestBodyEncoding encoding = RequestBodyEncoding::ContentLength;
+    std::size_t content_length = 0;
+};
+
+ParseResult parse_transfer_encoding_value(std::string_view value, bool& chunked_enabled) {
+    chunked_enabled = false;
+    std::size_t cursor = 0;
+    while (cursor <= value.size()) {
+        const std::size_t comma = value.find(',', cursor);
+        const std::string_view part =
+            comma == std::string_view::npos ? value.substr(cursor) : value.substr(cursor, comma - cursor);
+        const std::string_view token = trim_ascii(part);
+        if (token.empty() || !is_valid_token(token)) {
+            return parse_error(HttpStatus::BadRequest, "Invalid Transfer-Encoding");
+        }
+        if (!equals_ignore_case_ascii(token, "chunked")) {
+            return parse_error(HttpStatus::NotImplemented, "Unsupported Transfer-Encoding");
+        }
+        if (chunked_enabled) {
+            return parse_error(HttpStatus::BadRequest, "Invalid Transfer-Encoding");
+        }
+        chunked_enabled = true;
+
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        cursor = comma + 1U;
     }
 
-    content_length = 0;
+    if (!chunked_enabled) {
+        return parse_error(HttpStatus::BadRequest, "Invalid Transfer-Encoding");
+    }
+    return parse_complete();
+}
+
+ParseResult parse_chunk_size_line(std::string_view line, std::size_t& chunk_size) {
+    const std::size_t extension_pos = line.find(';');
+    const std::string_view size_text = line.substr(0, extension_pos);
+    if (size_text.empty() || !std::ranges::all_of(size_text, [](unsigned char ch) { return is_hex_digit(ch); })) {
+        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+    }
+
+    std::size_t parsed_size = 0;
+    const auto* begin = size_text.data();
+    const auto* end = size_text.data() + size_text.size();
+    const auto [ptr, ec] = std::from_chars(begin, end, parsed_size, 16);
+    if (ec != std::errc() || ptr != end) {
+        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+    }
+
+    if (extension_pos != std::string_view::npos) {
+        const std::string_view extension = line.substr(extension_pos + 1U);
+        if (extension.empty() || !is_valid_header_value(extension)) {
+            return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+        }
+    }
+
+    chunk_size = parsed_size;
+    return parse_complete();
+}
+
+ParseResult parse_chunk_trailer_line(std::string_view line) {
+    const std::size_t colon = line.find(':');
+    if (colon == std::string_view::npos) {
+        return parse_error(HttpStatus::BadRequest, "Invalid Chunk Trailer");
+    }
+
+    const std::string_view key = line.substr(0, colon);
+    const std::string_view value = trim_ascii(line.substr(colon + 1U));
+    if (!is_valid_token(key) || !is_valid_header_value(value)) {
+        return parse_error(HttpStatus::BadRequest, "Invalid Chunk Trailer");
+    }
+    return parse_complete();
+}
+
+ParseResult consume_chunk_trailers(std::string_view buffer, std::size_t& cursor, std::size_t& consumed_bytes) {
+    while (true) {
+        const std::size_t trailer_line_end = buffer.find("\r\n", cursor);
+        if (trailer_line_end == std::string_view::npos) {
+            return ParseResult{};
+        }
+        const std::string_view trailer_line = buffer.substr(cursor, trailer_line_end - cursor);
+        cursor = trailer_line_end + 2U;
+        if (trailer_line.empty()) {
+            consumed_bytes = cursor;
+            return parse_complete();
+        }
+
+        ParseResult parsed_trailer = parse_chunk_trailer_line(trailer_line);
+        if (parsed_trailer.status != ParseStatus::Complete) {
+            return parsed_trailer;
+        }
+    }
+}
+
+ParseResult append_chunk_payload(std::string_view buffer, std::size_t chunk_size, std::size_t max_body_bytes,
+                                 std::string& decoded_body, std::size_t& cursor) {
+    if (decoded_body.size() > max_body_bytes || chunk_size > (max_body_bytes - decoded_body.size())) {
+        return parse_error(HttpStatus::ContentTooLarge);
+    }
+
+    if (chunk_size > (std::numeric_limits<std::size_t>::max() - cursor)) {
+        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+    }
+    const std::size_t chunk_data_end = cursor + chunk_size;
+    if (buffer.size() < chunk_data_end) {
+        return ParseResult{};
+    }
+    if (chunk_data_end > (std::numeric_limits<std::size_t>::max() - 2U)) {
+        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+    }
+    if (buffer.size() < (chunk_data_end + 2U)) {
+        return ParseResult{};
+    }
+    if (buffer[chunk_data_end] != '\r' || buffer[chunk_data_end + 1U] != '\n') {
+        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+    }
+
+    decoded_body.append(buffer.substr(cursor, chunk_size));
+    cursor = chunk_data_end + 2U;
+    return parse_complete();
+}
+
+void reset_chunked_decode_state(HttpRequestParseContext& context, std::size_t body_offset) {
+    context.chunk_cursor = body_offset;
+    context.chunk_size = 0;
+    context.chunk_phase = ChunkedDecodePhase::ChunkSizeLine;
+    context.decoded_chunked_body.clear();
+}
+
+ParseResult decode_chunked_body_incremental(std::string_view buffer, std::size_t max_body_bytes,
+                                            HttpRequestParseContext& context, std::size_t& consumed_bytes) {
+    while (true) {
+        switch (context.chunk_phase) {
+            case ChunkedDecodePhase::ChunkSizeLine: {
+                const std::size_t size_line_end = buffer.find("\r\n", context.chunk_cursor);
+                if (size_line_end == std::string_view::npos) {
+                    return ParseResult{};
+                }
+
+                ParseResult parsed_chunk_size = parse_chunk_size_line(
+                    buffer.substr(context.chunk_cursor, size_line_end - context.chunk_cursor), context.chunk_size);
+                if (parsed_chunk_size.status != ParseStatus::Complete) {
+                    return parsed_chunk_size;
+                }
+                context.chunk_cursor = size_line_end + 2U;
+                context.chunk_phase =
+                    context.chunk_size == 0U ? ChunkedDecodePhase::ChunkTrailers : ChunkedDecodePhase::ChunkPayload;
+                continue;
+            }
+            case ChunkedDecodePhase::ChunkPayload: {
+                ParseResult parsed_payload = append_chunk_payload(buffer, context.chunk_size, max_body_bytes,
+                                                                  context.decoded_chunked_body, context.chunk_cursor);
+                if (parsed_payload.status != ParseStatus::Complete) {
+                    return parsed_payload;
+                }
+
+                context.chunk_size = 0;
+                context.chunk_phase = ChunkedDecodePhase::ChunkSizeLine;
+                continue;
+            }
+            case ChunkedDecodePhase::ChunkTrailers: {
+                ParseResult parsed_trailers = consume_chunk_trailers(buffer, context.chunk_cursor, consumed_bytes);
+                if (parsed_trailers.status != ParseStatus::Complete) {
+                    return parsed_trailers;
+                }
+                return parse_complete();
+            }
+        }
+    }
+}
+
+ParseResult resolve_request_body(const HttpRequest& request, std::size_t max_body_bytes,
+                                 RequestBodyResolution& resolution) {
+    resolution = RequestBodyResolution{};
+
+    const auto transfer_encoding_it = request.headers.find("transfer-encoding");
+    if (transfer_encoding_it != request.headers.end()) {
+        if (request.headers.contains("content-length")) {
+            return parse_error(HttpStatus::BadRequest, "Conflicting Message Framing");
+        }
+
+        bool chunked_enabled = false;
+        ParseResult parsed_transfer_encoding =
+            parse_transfer_encoding_value(transfer_encoding_it->second, chunked_enabled);
+        if (parsed_transfer_encoding.status != ParseStatus::Complete) {
+            return parsed_transfer_encoding;
+        }
+
+        resolution.encoding = RequestBodyEncoding::Chunked;
+        return parse_complete();
+    }
+
+    std::size_t content_length = 0;
     if (const auto it = request.headers.find("content-length"); it != request.headers.end()) {
         const std::optional<std::size_t> parsed = parse_content_length(it->second);
         if (!parsed.has_value()) {
@@ -662,6 +855,7 @@ ParseResult resolve_content_length(const HttpRequest& request, std::size_t max_b
         return parse_error(HttpStatus::ContentTooLarge);
     }
 
+    resolution.content_length = content_length;
     return parse_complete();
 }
 
@@ -696,15 +890,28 @@ ParseResult validate_host_header(const HttpRequest& request, std::string_view ve
     return parse_complete();
 }
 
-bool has_connection_option(std::string_view value, std::string_view option) {
+struct ConnectionOptions {
+    bool has_close = false;
+    bool has_keep_alive = false;
+};
+
+ConnectionOptions parse_connection_option(std::string_view value) {
+    ConnectionOptions options{};
     std::size_t cursor = 0;
     while (cursor <= value.size()) {
         const std::size_t comma = value.find(',', cursor);
         const std::string_view part =
             comma == std::string_view::npos ? value.substr(cursor) : value.substr(cursor, comma - cursor);
         const std::string_view token = trim_ascii(part);
-        if (!token.empty() && equals_ignore_case_ascii(token, option)) {
-            return true;
+        if (!token.empty()) {
+            if (!options.has_close && equals_ignore_case_ascii(token, "close")) {
+                options.has_close = true;
+            } else if (!options.has_keep_alive && equals_ignore_case_ascii(token, "keep-alive")) {
+                options.has_keep_alive = true;
+            }
+            if (options.has_close && options.has_keep_alive) {
+                break;
+            }
         }
 
         if (comma == std::string_view::npos) {
@@ -712,7 +919,7 @@ bool has_connection_option(std::string_view value, std::string_view option) {
         }
         cursor = comma + 1U;
     }
-    return false;
+    return options;
 }
 
 void apply_connection_policy(HttpRequest& request, std::string_view version_text) {
@@ -720,20 +927,22 @@ void apply_connection_policy(HttpRequest& request, std::string_view version_text
     request.keep_alive = http11;
     if (const auto connection_it = request.headers.find("connection"); connection_it != request.headers.end()) {
         const std::string_view connection_value = connection_it->second;
-        const bool has_close = has_connection_option(connection_value, "close");
-        const bool has_keep_alive = has_connection_option(connection_value, "keep-alive");
-        if (has_close) {
+        const ConnectionOptions options = parse_connection_option(connection_value);
+        if (options.has_close) {
             request.keep_alive = false;
-        } else if (has_keep_alive) {
+        } else if (options.has_keep_alive) {
             request.keep_alive = true;
         }
     }
 }
 
-}  // namespace
+ParseResult parse_request_headers_once(std::string_view buffer, std::size_t max_header_bytes,
+                                       std::size_t max_body_bytes, std::size_t max_request_target_bytes,
+                                       HttpRequestParseContext& context) {
+    if (context.header_parsed) {
+        return parse_complete();
+    }
 
-ParseResult parse_http_request(std::string_view buffer, std::size_t max_header_bytes, std::size_t max_body_bytes,
-                               std::size_t max_request_target_bytes) {
     const std::size_t header_end = buffer.find("\r\n\r\n");
     if (header_end == std::string_view::npos) {
         if (buffer.size() > max_header_bytes) {
@@ -747,54 +956,122 @@ ParseResult parse_http_request(std::string_view buffer, std::size_t max_header_b
         return parse_error(HttpStatus::RequestHeaderFieldsTooLarge);
     }
 
-    HttpRequest request;
-    const std::string_view header_block = buffer.substr(0, header_end);
+    context.request = HttpRequest{};
+    context.header_bytes = header_bytes;
+    context.content_length = 0;
+    context.chunked_body = false;
 
+    const std::string_view header_block = buffer.substr(0, header_end);
     std::string_view version_text;
     std::string_view request_target;
     std::size_t request_line_end = std::string_view::npos;
-    ParseResult parsed_line = parse_request_line(header_block, request, version_text, request_target, request_line_end,
-                                                 max_request_target_bytes);
+    ParseResult parsed_line = parse_request_line(header_block, context.request, version_text, request_target,
+                                                 request_line_end, max_request_target_bytes);
     if (parsed_line.status != ParseStatus::Complete) {
         return parsed_line;
     }
 
-    ParseResult parsed_headers = parse_headers(header_block, request_line_end, request);
+    ParseResult parsed_headers = parse_headers(header_block, request_line_end, context.request);
     if (parsed_headers.status != ParseStatus::Complete) {
         return parsed_headers;
     }
 
-    ParseResult validated_host = validate_host_header(request, version_text, request_target);
+    ParseResult validated_host = validate_host_header(context.request, version_text, request_target);
     if (validated_host.status != ParseStatus::Complete) {
         return validated_host;
     }
 
-    std::size_t content_length = 0;
-    ParseResult resolved_length = resolve_content_length(request, max_body_bytes, content_length);
-    if (resolved_length.status != ParseStatus::Complete) {
-        return resolved_length;
+    RequestBodyResolution resolved_body;
+    ParseResult body_resolution = resolve_request_body(context.request, max_body_bytes, resolved_body);
+    if (body_resolution.status != ParseStatus::Complete) {
+        return body_resolution;
     }
 
-    if (content_length > (std::numeric_limits<std::size_t>::max() - header_bytes)) {
-        return parse_error(HttpStatus::ContentTooLarge);
+    context.chunked_body = resolved_body.encoding == RequestBodyEncoding::Chunked;
+    context.content_length = resolved_body.content_length;
+    if (context.chunked_body) {
+        reset_chunked_decode_state(context, context.header_bytes);
+    } else {
+        context.request.body.clear();
     }
 
-    const std::size_t total_needed = header_bytes + content_length;
-    if (buffer.size() < total_needed) {
-        return ParseResult{};
+    apply_connection_policy(context.request, version_text);
+    context.header_parsed = true;
+    return parse_complete();
+}
+
+ParseResult parse_request_body_from_context(std::string_view buffer, std::size_t max_body_bytes,
+                                            HttpRequestParseContext& context, std::size_t& total_needed) {
+    total_needed = 0;
+    if (!context.chunked_body) {
+        if (context.content_length > (std::numeric_limits<std::size_t>::max() - context.header_bytes)) {
+            return parse_error(HttpStatus::ContentTooLarge);
+        }
+        total_needed = context.header_bytes + context.content_length;
+        if (buffer.size() < total_needed) {
+            return ParseResult{};
+        }
+        if (context.content_length > 0U) {
+            context.request.body = buffer.substr(context.header_bytes, context.content_length);
+        }
+        return parse_complete();
     }
 
-    if (content_length > 0U) {
-        request.body = buffer.substr(header_bytes, content_length);
+    ParseResult decoded_chunked = decode_chunked_body_incremental(buffer, max_body_bytes, context, total_needed);
+    if (decoded_chunked.status != ParseStatus::Complete) {
+        return decoded_chunked;
     }
 
-    apply_connection_policy(request, version_text);
+    context.request.body = std::move(context.decoded_chunked_body);
+    return parse_complete();
+}
+
+}  // namespace
+
+void HttpRequestParseContext::reset() {
+    header_parsed = false;
+    chunked_body = false;
+    header_bytes = 0;
+    content_length = 0;
+    chunk_cursor = 0;
+    chunk_size = 0;
+    chunk_phase = ChunkedDecodePhase::ChunkSizeLine;
+    request = HttpRequest{};
+    std::string{}.swap(decoded_chunked_body);
+}
+
+ParseResult parse_http_request(std::string_view buffer, std::size_t max_header_bytes, std::size_t max_body_bytes,
+                               std::size_t max_request_target_bytes, HttpRequestParseContext& context) {
+    ParseResult parsed_headers =
+        parse_request_headers_once(buffer, max_header_bytes, max_body_bytes, max_request_target_bytes, context);
+    if (parsed_headers.status != ParseStatus::Complete) {
+        if (parsed_headers.status == ParseStatus::Error) {
+            context.reset();
+        }
+        return parsed_headers;
+    }
+
+    std::size_t total_needed = 0;
+    ParseResult parsed_body = parse_request_body_from_context(buffer, max_body_bytes, context, total_needed);
+    if (parsed_body.status != ParseStatus::Complete) {
+        if (parsed_body.status == ParseStatus::Error) {
+            context.reset();
+        }
+        return parsed_body;
+    }
 
     ParseResult result;
     result.status = ParseStatus::Complete;
     result.consumed_bytes = total_needed;
-    result.request = std::move(request);
+    result.request = std::move(context.request);
+    context.reset();
     return result;
+}
+
+ParseResult parse_http_request(std::string_view buffer, std::size_t max_header_bytes, std::size_t max_body_bytes,
+                               std::size_t max_request_target_bytes) {
+    HttpRequestParseContext context;
+    return parse_http_request(buffer, max_header_bytes, max_body_bytes, max_request_target_bytes, context);
 }
 
 }  // namespace nebula::http

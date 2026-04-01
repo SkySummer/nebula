@@ -1,34 +1,19 @@
 #ifndef NEBULA_SERVER_SERVER_CONFIG_HPP
 #define NEBULA_SERVER_SERVER_CONFIG_HPP
 
-#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include "nebula/common/logger.hpp"
 
 namespace nebula::server {
 
-inline std::size_t default_worker_thread_count() {
-    const std::size_t hardware = std::thread::hardware_concurrency();
-    if (hardware == 0U) {
-        return 1U;
-    }
-    return std::max<std::size_t>(1U, hardware / 2U);
-}
-
-inline std::size_t default_sub_reactor_count() {
-    const std::size_t hardware = std::thread::hardware_concurrency();
-    if (hardware == 0U) {
-        return 1U;
-    }
-    return std::max<std::size_t>(1U, hardware / 2U);
-}
+std::size_t default_worker_thread_count();
+std::size_t default_sub_reactor_count();
 
 struct ServerConfig {
     std::uint16_t port = 8080;
@@ -50,14 +35,7 @@ struct ServerConfig {
     std::size_t max_body_bytes = static_cast<std::size_t>(1024U) * 1024U;
 };
 
-inline void normalize_server_thread_counts(ServerConfig& config) {
-    if (config.sub_reactor_count == 0U) {
-        config.sub_reactor_count = default_sub_reactor_count();
-    }
-    if (config.worker_thread_count == 0U) {
-        config.worker_thread_count = default_worker_thread_count();
-    }
-}
+void normalize_server_thread_counts(ServerConfig& config);
 
 enum class ServerConfigSource : std::uint8_t {
     Default,

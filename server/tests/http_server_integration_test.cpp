@@ -248,6 +248,18 @@ std::size_t count_occurrences(std::string_view text, std::string_view needle) {
     }
 }
 
+std::string encode_chunked_single_byte_chunks(std::string_view body) {
+    std::string chunked;
+    chunked.reserve((body.size() * 6U) + 5U);
+    for (const char ch : body) {
+        chunked.append("1\r\n");
+        chunked.push_back(ch);
+        chunked.append("\r\n");
+    }
+    chunked.append("0\r\n\r\n");
+    return chunked;
+}
+
 void wait_until_server_ready(nebula::server::HttpServerRuntime& server) {
     using namespace std::chrono_literals;
 
@@ -1536,7 +1548,7 @@ void test_method_not_allowed_includes_allow_header() {
     expect_contains(response, "Method Not Allowed", "error body should keep method not allowed text");
 }
 
-void test_chunked_request_rejected() {
+void test_chunked_request_echo_endpoint() {
     nebula::server::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
@@ -1549,16 +1561,49 @@ void test_chunked_request_rejected() {
     const int fd = connect_localhost(server.listening_port());
     expect_true(fd >= 0, "connect should succeed");
 
+    const std::string body = "hello chunked";
     const std::string request =
-        "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        "5\r\nhello\r\n8\r\n chunked\r\n0\r\n\r\n";
     expect_true(send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 501 Not Implemented", "chunked request should return 501");
-    expect_contains(response, "Unsupported Transfer-Encoding", "error body should explain rejection");
+    expect_contains(response, "HTTP/1.1 200 OK", "chunked request should return 200");
+    expect_contains(response, body, "chunked request should decode and echo body");
+}
+
+void test_chunked_many_boundaries_within_decoded_limit_returns_200() {
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    config.max_header_bytes = 128U;
+    config.max_body_bytes = 16U;
+    auto server = build_runtime(config, build_default_router());
+
+    std::thread server_thread([&server]() { server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    const int fd = connect_localhost(server.listening_port());
+    expect_true(fd >= 0, "connect should succeed");
+
+    const std::string body = "abcdefghijklmnop";
+    const std::string request =
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
+        encode_chunked_single_byte_chunks(body);
+    expect_true(send_all(fd, request), "send request should succeed");
+
+    std::string carry;
+    const std::string response = read_one_response(fd, carry);
+    ::close(fd);
+
+    expect_contains(response, "HTTP/1.1 200 OK",
+                    "chunked request with many boundaries under decoded limit should return 200");
+    expect_contains(response, body,
+                    "chunked request with many boundaries under decoded limit should decode and echo body");
 }
 
 void test_missing_host_returns_400() {
@@ -1804,7 +1849,7 @@ void test_parse_error_responds_once_before_close() {
     expect_true(fd >= 0, "connect should succeed");
 
     const std::string bad_request =
-        "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: abc\r\nConnection: close\r\n\r\n";
     expect_true(send_all(fd, bad_request), "send bad request should succeed");
 
     const std::string extra = std::string(512U, 'x');
@@ -1817,7 +1862,7 @@ void test_parse_error_responds_once_before_close() {
     const std::string all_responses = read_until_close(fd);
     ::close(fd);
 
-    expect_contains(all_responses, "HTTP/1.1 501 Not Implemented", "parse error should return 501");
+    expect_contains(all_responses, "HTTP/1.1 400 Bad Request", "parse error should return 400");
     const std::size_t response_count = count_occurrences(all_responses, "HTTP/1.1 ");
     expect_true(response_count == 1U, "parse error should respond once before closing connection");
 }
@@ -1910,7 +1955,9 @@ int run_http_server_integration_tests() {
         {"del route while running", test_del_route_while_running},
         {"mod route while running", test_mod_route_while_running},
         {"method not allowed includes allow header", test_method_not_allowed_includes_allow_header},
-        {"chunked request rejected", test_chunked_request_rejected},
+        {"chunked request echo endpoint", test_chunked_request_echo_endpoint},
+        {"chunked many boundaries within decoded limit returns 200",
+         test_chunked_many_boundaries_within_decoded_limit_returns_200},
         {"missing host returns 400", test_missing_host_returns_400},
         {"empty host returns 400", test_empty_host_returns_400},
         {"unknown method returns 501", test_unknown_method_returns_501},

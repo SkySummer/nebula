@@ -1,5 +1,6 @@
 #include "nebula/server/http_sub_reactor.hpp"
 
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -8,7 +9,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -25,6 +25,8 @@ namespace nebula::server {
 namespace {
 
 constexpr std::size_t kReadChunkSize = 4096U;
+constexpr std::size_t kChunkedWorstCaseBytesPerDecodedByte = 6U;
+constexpr std::size_t kChunkedTerminalBytes = 5U;
 
 #ifdef MSG_NOSIGNAL
 constexpr int kConnectionSendFlags = MSG_NOSIGNAL;
@@ -32,11 +34,29 @@ constexpr int kConnectionSendFlags = MSG_NOSIGNAL;
 constexpr int kConnectionSendFlags = 0;
 #endif
 
-std::size_t max_pending_read_bytes(std::size_t max_header_bytes, std::size_t max_body_bytes) {
-    if (max_header_bytes > (std::numeric_limits<std::size_t>::max() - max_body_bytes)) {
+std::size_t saturating_add(std::size_t lhs, std::size_t rhs) {
+    if (lhs > (std::numeric_limits<std::size_t>::max() - rhs)) {
         return std::numeric_limits<std::size_t>::max();
     }
-    return max_header_bytes + max_body_bytes;
+    return lhs + rhs;
+}
+
+std::size_t saturating_mul(std::size_t lhs, std::size_t rhs) {
+    if (lhs == 0U || rhs == 0U) {
+        return 0U;
+    }
+    if (lhs > (std::numeric_limits<std::size_t>::max() / rhs)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return lhs * rhs;
+}
+
+std::size_t max_pending_read_bytes(std::size_t max_header_bytes, std::size_t max_body_bytes) {
+    std::size_t pending_limit = saturating_mul(max_body_bytes, kChunkedWorstCaseBytesPerDecodedByte);
+    pending_limit = saturating_add(pending_limit, max_header_bytes);
+    pending_limit = saturating_add(pending_limit, max_header_bytes);
+    pending_limit = saturating_add(pending_limit, kChunkedTerminalBytes);
+    return pending_limit;
 }
 
 std::string extract_request_line(std::string_view read_buffer) {
@@ -131,29 +151,15 @@ void HttpSubReactor::handle_readable(Connection& connection) {
     connection.last_active = std::chrono::steady_clock::now();
     const std::size_t pending_limit = max_pending_read_bytes(config_.max_header_bytes, config_.max_body_bytes);
 
-    std::vector<char> buffer(kReadChunkSize);
+    std::array<char, kReadChunkSize> buffer{};
     while (true) {
         const ssize_t read_n = ::recv(connection.fd, buffer.data(), buffer.size(), 0);
         if (read_n > 0) {
             connection.last_active = std::chrono::steady_clock::now();
-            if (!connection.close_after_write) {
-                connection.read_buffer.append(buffer.data(), static_cast<std::size_t>(read_n));
-                if (connection.read_buffer.size() > pending_limit) {
-                    common::Logger::instance()
-                        .warn("sub reactor pending request bytes exceeded")
-                        .field("fd", connection.fd)
-                        .field("reactor_id", id_)
-                        .field("pending_bytes", connection.read_buffer.size())
-                        .field("max_pending_bytes", pending_limit)
-                        .field("next_state", "closing");
-                    close_connection(connection.fd, "pending_bytes_exceeded");
-                    return;
-                }
+            if (!append_read_data(connection, buffer.data(), static_cast<std::size_t>(read_n), pending_limit)) {
+                return;
             }
-
-            if (!connection.processing && connection.write_buffer.empty()) {
-                parse_next_request(connection);
-            }
+            parse_next_request_if_ready(connection);
             continue;
         }
 
@@ -162,28 +168,99 @@ void HttpSubReactor::handle_readable(Connection& connection) {
             return;
         }
 
-        if (errno == EINTR) {
-            continue;
+        bool should_break = false;
+        if (!handle_recv_error(connection, errno, should_break)) {
+            return;
         }
-
-        if (common::is_would_block(errno)) {
+        if (should_break) {
             break;
         }
-
-        const int err = errno;
-        common::Logger::instance()
-            .warn("sub reactor read failed")
-            .field("fd", connection.fd)
-            .field("reactor_id", id_)
-            .field("errno", err, common::errno_message(err))
-            .field("next_state", "closing");
-        close_connection(connection.fd, "read_failed");
-        return;
     }
 
+    parse_next_request_if_ready(connection);
+}
+
+void HttpSubReactor::parse_next_request_if_ready(Connection& connection) {
     if (!connection.processing && connection.write_buffer.empty()) {
         parse_next_request(connection);
     }
+}
+
+bool HttpSubReactor::append_read_data(Connection& connection, const char* data, std::size_t read_n,
+                                      std::size_t pending_limit) {
+    if (connection.close_after_write) {
+        return true;
+    }
+
+    if (!connection.active_request_started_at.has_value() && !connection.processing &&
+        connection.write_buffer.empty() && connection.read_buffer.empty()) {
+        connection.active_request_started_at = std::chrono::steady_clock::now();
+    }
+
+    connection.read_buffer.append(data, read_n);
+    if (connection.read_buffer.size() > pending_limit) {
+        handle_pending_bytes_exceeded(connection, pending_limit);
+        return false;
+    }
+    return true;
+}
+
+void HttpSubReactor::handle_pending_bytes_exceeded(Connection& connection, std::size_t pending_limit) {
+    const bool can_enqueue_error_response = !connection.processing && connection.write_buffer.empty();
+    common::Logger::instance()
+        .warn("sub reactor pending request bytes exceeded")
+        .field("fd", connection.fd)
+        .field("reactor_id", id_)
+        .field("pending_bytes", connection.read_buffer.size())
+        .field("max_pending_bytes", pending_limit)
+        .field("decision", can_enqueue_error_response ? "respond_413_then_close" : "close_connection")
+        .field("next_state", "closing");
+
+    if (!can_enqueue_error_response) {
+        close_connection(connection.fd, "pending_bytes_exceeded");
+        return;
+    }
+
+    connection.close_after_write = true;
+    connection.processing = true;
+    const std::string request_line = extract_request_line(connection.read_buffer);
+    const std::size_t request_bytes = connection.read_buffer.size();
+    if (!connection.active_request_started_at.has_value()) {
+        connection.active_request_started_at = std::chrono::steady_clock::now();
+    }
+    const auto request_started_at = *connection.active_request_started_at;
+    connection.active_request_started_at.reset();
+    const bool suppress_body = is_head_request_line(request_line);
+    try {
+        enqueue_error_response(connection.fd, connection.token, http::HttpStatus::ContentTooLarge, {}, true,
+                               suppress_body, request_line, request_bytes, request_started_at);
+    } catch (const std::exception& e) {
+        close_with_response_enqueue_error("sub reactor enqueue pending limit error response failed", connection.fd,
+                                          connection.token, e.what(), "response_enqueue_failed");
+    } catch (...) {
+        close_with_response_enqueue_error("sub reactor enqueue pending limit error response failed", connection.fd,
+                                          connection.token, "unknown", "response_enqueue_failed");
+    }
+}
+
+bool HttpSubReactor::handle_recv_error(Connection& connection, int err, bool& should_break) {
+    should_break = false;
+    if (err == EINTR) {
+        return true;
+    }
+    if (common::is_would_block(err)) {
+        should_break = true;
+        return true;
+    }
+
+    common::Logger::instance()
+        .warn("sub reactor read failed")
+        .field("fd", connection.fd)
+        .field("reactor_id", id_)
+        .field("errno", err, common::errno_message(err))
+        .field("next_state", "closing");
+    close_connection(connection.fd, "read_failed");
+    return false;
 }
 
 void HttpSubReactor::handle_writable(Connection& connection) {
@@ -240,7 +317,8 @@ void HttpSubReactor::handle_writable(Connection& connection) {
     parse_next_request(connection);
 }
 
-void HttpSubReactor::schedule_request(Connection& connection, http::HttpRequest request, std::size_t request_bytes) {
+void HttpSubReactor::schedule_request(Connection& connection, http::HttpRequest request, std::size_t request_bytes,
+                                      std::chrono::steady_clock::time_point request_started_at) {
     if (current_lifecycle_state() != LifecycleState::Running) {
         connection.close_after_write = true;
         close_connection(connection.fd, "graceful_shutdown");
@@ -254,7 +332,6 @@ void HttpSubReactor::schedule_request(Connection& connection, http::HttpRequest 
     const int fd = connection.fd;
     const std::uint64_t connection_token = connection.token;
     const std::string request_line = request.request_line;
-    const auto request_started_at = std::chrono::steady_clock::now();
 
     try {
         if (!dispatch_request_) {
@@ -304,19 +381,27 @@ void HttpSubReactor::parse_next_request(Connection& connection) {
         return;
     }
 
-    const std::string request_line = extract_request_line(connection.read_buffer);
-    const std::size_t request_bytes = connection.read_buffer.size();
-    const auto request_started_at = std::chrono::steady_clock::now();
+    if (connection.read_buffer.empty()) {
+        return;
+    }
+    if (!connection.active_request_started_at.has_value()) {
+        connection.active_request_started_at = std::chrono::steady_clock::now();
+    }
 
-    http::ParseResult parsed = http::parse_http_request(connection.read_buffer, config_.max_header_bytes,
-                                                        config_.max_body_bytes, config_.max_request_target_bytes);
+    http::ParseResult parsed =
+        http::parse_http_request(connection.read_buffer, config_.max_header_bytes, config_.max_body_bytes,
+                                 config_.max_request_target_bytes, connection.parse_context);
     switch (parsed.status) {
         case http::ParseStatus::NeedMore:
             return;
         case http::ParseStatus::Error: {
             connection.close_after_write = true;
             connection.processing = true;
+            const std::size_t request_bytes = connection.read_buffer.size();
+            const std::string request_line = extract_request_line(connection.read_buffer);
             const bool suppress_body = is_head_request_line(request_line);
+            const auto request_started_at = *connection.active_request_started_at;
+            connection.active_request_started_at.reset();
             try {
                 enqueue_error_response(connection.fd, connection.token, parsed.http_status, parsed.error, true,
                                        suppress_body, request_line, request_bytes, request_started_at);
@@ -333,8 +418,10 @@ void HttpSubReactor::parse_next_request(Connection& connection) {
             break;
     }
 
+    const auto request_started_at = *connection.active_request_started_at;
+    connection.active_request_started_at.reset();
     connection.read_buffer.erase(0, parsed.consumed_bytes);
-    schedule_request(connection, std::move(parsed.request), parsed.consumed_bytes);
+    schedule_request(connection, std::move(parsed.request), parsed.consumed_bytes, request_started_at);
 }
 
 void HttpSubReactor::enqueue_error_response(int fd, std::uint64_t token, http::HttpStatus status, std::string body,
@@ -375,9 +462,8 @@ void HttpSubReactor::apply_response_to_connection(Connection& connection, const 
                                                   std::chrono::steady_clock::time_point request_started_at) {
     connection.processing = false;
     const std::string serialized_response = http::serialize_http_response(response, !close_after_write, suppress_body);
-    const auto latency_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - request_started_at)
-            .count();
+    const auto latency = std::chrono::steady_clock::now() - request_started_at;
+    const auto latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(latency).count();
     const std::string quoted_request = quote_request_line_for_log(request_line);
 
     common::Logger::instance()

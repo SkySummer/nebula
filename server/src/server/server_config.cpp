@@ -9,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -289,6 +290,31 @@ bool apply_table_to_config(const Table& table, ServerConfig& config, ServerConfi
 }
 
 }  // namespace
+
+std::size_t default_worker_thread_count() {
+    const std::size_t hardware = std::thread::hardware_concurrency();
+    if (hardware == 0U) {
+        return 1U;
+    }
+    return std::max<std::size_t>(1U, hardware / 2U);
+}
+
+std::size_t default_sub_reactor_count() {
+    const std::size_t hardware = std::thread::hardware_concurrency();
+    if (hardware == 0U) {
+        return 1U;
+    }
+    return std::max<std::size_t>(1U, hardware / 2U);
+}
+
+void normalize_server_thread_counts(ServerConfig& config) {
+    if (config.sub_reactor_count == 0U) {
+        config.sub_reactor_count = default_sub_reactor_count();
+    }
+    if (config.worker_thread_count == 0U) {
+        config.worker_thread_count = default_worker_thread_count();
+    }
+}
 
 std::string_view to_string(ServerConfigSource source) {
     switch (source) {
