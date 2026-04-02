@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace nebula::http {
 
@@ -92,6 +93,8 @@ int to_status_code(HttpStatus status);
 [[nodiscard]] std::string_view to_string(HttpStatus status);
 
 using HeaderMap = std::unordered_map<std::string, std::string>;
+
+[[nodiscard]] std::vector<std::string> split_http_path_segments(std::string_view path);
 
 struct HttpRequest {
     HttpMethod method = HttpMethod::Unknown;

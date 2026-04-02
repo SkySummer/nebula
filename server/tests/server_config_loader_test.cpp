@@ -48,7 +48,13 @@ void test_load_full_valid_config() {
                "[limits]\n"
                "max_header_bytes = 4096\n"
                "max_request_target_bytes = 2048\n"
-               "max_body_bytes = 8192\n");
+               "max_body_bytes = 8192\n"
+               "\n"
+               "[routes]\n"
+               "enable_healthz = false\n"
+               "enable_echo = true\n"
+               "enable_root_default = true\n"
+               "root_default_path = \"/healthz\"\n");
 
     const nebula::server::ServerConfigLoadResult loaded(file);
     expect_true(loaded.ok, "valid config should load");
@@ -71,6 +77,10 @@ void test_load_full_valid_config() {
     expect_equal(config.max_request_target_bytes, static_cast<std::size_t>(2048),
                  "max_request_target_bytes should map");
     expect_equal(config.max_body_bytes, static_cast<std::size_t>(8192), "max_body_bytes should map");
+    expect_true(!config.enable_healthz, "enable_healthz should map");
+    expect_true(config.enable_echo, "enable_echo should map");
+    expect_true(config.enable_root_default, "enable_root_default should map");
+    expect_equal(config.root_default_path, std::string("/healthz"), "root_default_path should map");
 }
 
 void test_worker_thread_count_zero_maps_to_default_auto_value() {
@@ -78,7 +88,10 @@ void test_worker_thread_count_zero_maps_to_default_auto_value() {
     const std::filesystem::path file = dir.path() / "server.toml";
     write_file(file,
                "[server]\n"
-               "worker_thread_count = 0\n");
+               "worker_thread_count = 0\n"
+               "\n"
+               "[routes]\n"
+               "enable_root_default = false\n");
 
     const nebula::server::ServerConfigLoadResult loaded(file);
     expect_true(loaded.ok, "worker_thread_count zero should load");
@@ -92,7 +105,10 @@ void test_sub_reactor_count_zero_maps_to_default_auto_value() {
     const std::filesystem::path file = dir.path() / "server.toml";
     write_file(file,
                "[server]\n"
-               "sub_reactor_count = 0\n");
+               "sub_reactor_count = 0\n"
+               "\n"
+               "[routes]\n"
+               "enable_root_default = false\n");
 
     const nebula::server::ServerConfigLoadResult loaded(file);
     expect_true(loaded.ok, "sub_reactor_count zero should load");
@@ -164,6 +180,162 @@ void test_port_zero_rejected() {
     expect_equal(loaded.error, std::string("value_out_of_range:server.port"), "port zero should return fixed error");
 }
 
+void test_root_default_path_type_mismatch_rejected() {
+    const TempDir dir("nebula-server-config-root-default-path-type");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "root_default_path = 1\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "root_default_path type mismatch should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "type mismatch should report line");
+    expect_equal(loaded.error, std::string("type_mismatch:routes.root_default_path"),
+                 "root_default_path type mismatch should return fixed error");
+}
+
+void test_enable_healthz_type_mismatch_rejected() {
+    const TempDir dir("nebula-server-config-enable-healthz-type");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_healthz = 1\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "enable_healthz type mismatch should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "enable_healthz type mismatch should report line");
+    expect_equal(loaded.error, std::string("type_mismatch:routes.enable_healthz"),
+                 "enable_healthz type mismatch should return fixed error");
+}
+
+void test_enable_echo_type_mismatch_rejected() {
+    const TempDir dir("nebula-server-config-enable-echo-type");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_echo = 1\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "enable_echo type mismatch should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "enable_echo type mismatch should report line");
+    expect_equal(loaded.error, std::string("type_mismatch:routes.enable_echo"),
+                 "enable_echo type mismatch should return fixed error");
+}
+
+void test_enable_root_default_type_mismatch_rejected() {
+    const TempDir dir("nebula-server-config-enable-root-default-type");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = 1\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "enable_root_default type mismatch should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2),
+                 "enable_root_default type mismatch should report line");
+    expect_equal(loaded.error, std::string("type_mismatch:routes.enable_root_default"),
+                 "enable_root_default type mismatch should return fixed error");
+}
+
+void test_root_default_path_empty_rejected() {
+    const TempDir dir("nebula-server-config-root-default-path-empty");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "root_default_path = \"\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "empty root_default_path should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "empty root_default_path should report line");
+    expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:empty_path"),
+                 "empty root_default_path should return fixed error");
+}
+
+void test_root_default_path_without_leading_slash_rejected() {
+    const TempDir dir("nebula-server-config-root-default-path-leading-slash");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "root_default_path = \"healthz\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "root_default_path without leading slash should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2),
+                 "root_default_path without leading slash should report line");
+    expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:must_start_with_slash"),
+                 "root_default_path without leading slash should return fixed error");
+}
+
+void test_root_default_path_self_mapping_rejected() {
+    const TempDir dir("nebula-server-config-root-default-path-self");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "root_default_path = \"/\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "root_default_path self mapping should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "root_default_path self mapping should report line");
+    expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:self_mapping_not_allowed"),
+                 "root_default_path self mapping should return fixed error");
+}
+
+void test_root_default_path_template_rejected() {
+    const TempDir dir("nebula-server-config-root-default-path-template");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "root_default_path = \"/users/{id}\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "root_default_path template should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "root_default_path template should report line");
+    expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:path_template_not_allowed"),
+                 "root_default_path template should return fixed error");
+}
+
+void test_root_default_path_required_when_enable_root_default_true() {
+    const TempDir dir("nebula-server-config-root-default-path-required");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = true\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "missing root_default_path should fail when enable_root_default is true");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(0),
+                 "missing root_default_path should report no concrete source line");
+    expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:required_when_enable_root_default"),
+                 "missing root_default_path should return fixed error");
+}
+
+void test_root_default_path_required_when_enable_root_default_default_true() {
+    const TempDir dir("nebula-server-config-root-default-path-required-default");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[server]\n"
+               "port = 8081\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "missing root_default_path should fail when enable_root_default stays default true");
+    expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:required_when_enable_root_default"),
+                 "missing root_default_path with default enable_root_default should return fixed error");
+}
+
+void test_root_default_path_missing_allowed_when_enable_root_default_false() {
+    const TempDir dir("nebula-server-config-root-default-path-disabled");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(loaded.ok, "missing root_default_path should be allowed when enable_root_default is false");
+    expect_true(!loaded.config.enable_root_default, "enable_root_default should map");
+    expect_equal(loaded.config.root_default_path, std::string("/healthz"),
+                 "root_default_path should keep default when enable_root_default is false");
+}
+
 void test_missing_file_fails() {
     const TempDir dir("nebula-server-config-required");
     const std::filesystem::path missing = dir.path() / "missing.toml";
@@ -184,6 +356,20 @@ int run_server_config_loader_tests() {
         {"type mismatch rejected", test_type_mismatch_rejected},
         {"out of range rejected", test_out_of_range_rejected},
         {"port zero rejected", test_port_zero_rejected},
+        {"enable healthz type mismatch rejected", test_enable_healthz_type_mismatch_rejected},
+        {"enable echo type mismatch rejected", test_enable_echo_type_mismatch_rejected},
+        {"enable root default type mismatch rejected", test_enable_root_default_type_mismatch_rejected},
+        {"root default path type mismatch rejected", test_root_default_path_type_mismatch_rejected},
+        {"root default path empty rejected", test_root_default_path_empty_rejected},
+        {"root default path without leading slash rejected", test_root_default_path_without_leading_slash_rejected},
+        {"root default path self mapping rejected", test_root_default_path_self_mapping_rejected},
+        {"root default path template rejected", test_root_default_path_template_rejected},
+        {"root default path required when enable root default true",
+         test_root_default_path_required_when_enable_root_default_true},
+        {"root default path required when enable root default default true",
+         test_root_default_path_required_when_enable_root_default_default_true},
+        {"root default path missing allowed when enable root default false",
+         test_root_default_path_missing_allowed_when_enable_root_default_false},
         {"missing file fails", test_missing_file_fails},
     };
 

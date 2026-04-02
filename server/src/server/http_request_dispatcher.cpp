@@ -38,7 +38,7 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
 
     thread_pool_->submit([this, task = std::move(task)]() mutable {
         try {
-            http::HttpResponse response = dispatch_request(task.request);
+            http::HttpResponse response = dispatch_request(std::move(task.request));
             if (!submit_response_) {
                 throw std::runtime_error("response submit callback missing");
             }
@@ -103,12 +103,12 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
     });
 }
 
-http::HttpResponse HttpRequestDispatcher::dispatch_request(const http::HttpRequest& request) const {
+http::HttpResponse HttpRequestDispatcher::dispatch_request(http::HttpRequest request) const {
     if (router_ == nullptr) {
         return http::make_error_response(http::HttpStatus::NotFound);
     }
 
-    const http::RouteDispatchResult routed = router_->dispatch(request);
+    const http::RouteDispatchResult routed = router_->dispatch(std::move(request));
     if (routed.status == http::RouteStatus::Matched) {
         return routed.response;
     }

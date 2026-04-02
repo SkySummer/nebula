@@ -33,6 +33,11 @@ struct ServerConfig {
     std::size_t max_header_bytes = static_cast<std::size_t>(16U) * 1024U;
     std::size_t max_request_target_bytes = static_cast<std::size_t>(8U) * 1024U;
     std::size_t max_body_bytes = static_cast<std::size_t>(1024U) * 1024U;
+
+    bool enable_healthz = true;
+    bool enable_echo = true;
+    bool enable_root_default = true;
+    std::string root_default_path = "/healthz";
 };
 
 void normalize_server_thread_counts(ServerConfig& config);

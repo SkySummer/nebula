@@ -19,3 +19,9 @@ graceful_shutdown_timeout_ms = 5000
 max_header_bytes = 16384
 max_request_target_bytes = 8192
 max_body_bytes = 1048576
+
+[routes]
+enable_healthz = true
+enable_echo = true
+enable_root_default = true
+root_default_path = "/healthz"

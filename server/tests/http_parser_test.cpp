@@ -25,6 +25,11 @@ void expect_parse_error(const nebula::http::ParseResult& parsed, HttpStatus expe
     expect_equal(parsed.http_status, expected_status, message);
 }
 
+void expect_route_segments(const nebula::http::ParseResult& parsed, const std::vector<std::string>& expected,
+                           const char* message) {
+    expect_equal(nebula::http::split_http_path_segments(parsed.request.path), expected, message);
+}
+
 void test_parse_get_request() {
     const std::string raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n";
     const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, kMaxRequestTarget);
@@ -34,6 +39,7 @@ void test_parse_get_request() {
     expect_equal(parsed.request.request_line, std::string("GET /healthz HTTP/1.1"),
                  "request line should preserve raw text");
     expect_equal(parsed.request.path, std::string("/healthz"), "path should parse");
+    expect_route_segments(parsed, {"", "healthz"}, "route path should split from normalized path");
     expect_true(parsed.request.keep_alive, "http/1.1 should keep alive by default");
 }
 
@@ -43,6 +49,31 @@ void test_parse_get_request_with_query_uses_path_only_for_routing() {
 
     expect_equal(parsed.status, ParseStatus::Complete, "GET with query should parse");
     expect_equal(parsed.request.path, std::string("/healthz"), "route path should not include query");
+    expect_route_segments(parsed, {"", "healthz"}, "query should not appear in route path segments");
+}
+
+void test_parse_path_segments_root() {
+    const std::string raw = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, kMaxRequestTarget);
+
+    expect_equal(parsed.status, ParseStatus::Complete, "root path should parse");
+    expect_route_segments(parsed, {"", ""}, "root path should keep leading and trailing empty segments");
+}
+
+void test_parse_path_segments_trailing_slash() {
+    const std::string raw = "GET /users/42/ HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, kMaxRequestTarget);
+
+    expect_equal(parsed.status, ParseStatus::Complete, "path with trailing slash should parse");
+    expect_route_segments(parsed, {"", "users", "42", ""}, "trailing slash should be preserved as an empty segment");
+}
+
+void test_parse_path_segments_repeated_slash() {
+    const std::string raw = "GET /users//42 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, kMaxRequestTarget);
+
+    expect_equal(parsed.status, ParseStatus::Complete, "path with repeated slash should parse");
+    expect_route_segments(parsed, {"", "users", "", "42"}, "repeated slash should be preserved as an empty segment");
 }
 
 void test_parse_post_with_body() {
@@ -506,6 +537,7 @@ void test_parse_absolute_form_keeps_original_request_line() {
     expect_equal(parsed.request.request_line, std::string("GET http://example.com/healthz?ready=1 HTTP/1.1"),
                  "request line should keep original absolute-form");
     expect_equal(parsed.request.path, std::string("/healthz"), "route path should exclude absolute-form query");
+    expect_route_segments(parsed, {"", "healthz"}, "absolute-form should split normalized path segments");
 }
 
 void test_parse_absolute_form_query_only_normalized_with_root() {
@@ -568,6 +600,9 @@ int run_http_parser_tests() {
         {"parse GET request", test_parse_get_request},
         {"parse GET request with query uses path only for routing",
          test_parse_get_request_with_query_uses_path_only_for_routing},
+        {"parse path segments root", test_parse_path_segments_root},
+        {"parse path segments trailing slash", test_parse_path_segments_trailing_slash},
+        {"parse path segments repeated slash", test_parse_path_segments_repeated_slash},
         {"parse POST with body", test_parse_post_with_body},
         {"parse need more body", test_parse_need_more_body},
         {"parse bad request line", test_parse_bad_request_line},

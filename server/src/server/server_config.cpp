@@ -37,12 +37,20 @@ const std::unordered_set<std::string> kKnownKeys = {
     "limits.max_header_bytes",
     "limits.max_request_target_bytes",
     "limits.max_body_bytes",
+    "routes.enable_healthz",
+    "routes.enable_echo",
+    "routes.enable_root_default",
+    "routes.root_default_path",
 };
 
 std::string to_lower(std::string_view text) {
     std::string lower(text);
     std::ranges::transform(lower, lower.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lower;
+}
+
+bool path_contains_route_template_marker(std::string_view path) {
+    return path.find('{') != std::string_view::npos || path.find('}') != std::string_view::npos;
 }
 
 void fail(ServerConfigLoadResult& result, std::string error, std::size_t error_line = 0) {
@@ -276,6 +284,52 @@ bool apply_limit_values(const Table& table, ServerConfig& config, ServerConfigLo
     return assign_non_negative_integer(table, "limits.max_body_bytes", config.max_body_bytes, result);
 }
 
+bool apply_route_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
+    if (!assign_bool_value(table, "routes.enable_healthz", config.enable_healthz, result)) {
+        return false;
+    }
+    if (!assign_bool_value(table, "routes.enable_echo", config.enable_echo, result)) {
+        return false;
+    }
+    if (!assign_bool_value(table, "routes.enable_root_default", config.enable_root_default, result)) {
+        return false;
+    }
+
+    const config::TomlValue* root_default_path_raw = find_value(table, "routes.root_default_path");
+    if (root_default_path_raw == nullptr) {
+        if (config.enable_root_default) {
+            fail(result, "invalid_value:routes.root_default_path:required_when_enable_root_default");
+            return false;
+        }
+        return true;
+    }
+
+    const auto* root_default_path = std::get_if<std::string>(&root_default_path_raw->value);
+    if (root_default_path == nullptr) {
+        fail(result, "type_mismatch:routes.root_default_path", root_default_path_raw->line);
+        return false;
+    }
+    if (root_default_path->empty()) {
+        fail(result, "invalid_value:routes.root_default_path:empty_path", root_default_path_raw->line);
+        return false;
+    }
+    if ((*root_default_path)[0] != '/') {
+        fail(result, "invalid_value:routes.root_default_path:must_start_with_slash", root_default_path_raw->line);
+        return false;
+    }
+    if (*root_default_path == "/") {
+        fail(result, "invalid_value:routes.root_default_path:self_mapping_not_allowed", root_default_path_raw->line);
+        return false;
+    }
+    if (path_contains_route_template_marker(*root_default_path)) {
+        fail(result, "invalid_value:routes.root_default_path:path_template_not_allowed", root_default_path_raw->line);
+        return false;
+    }
+
+    config.root_default_path = *root_default_path;
+    return true;
+}
+
 bool apply_table_to_config(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
     if (!apply_server_values(table, config, result)) {
         return false;
@@ -286,7 +340,13 @@ bool apply_table_to_config(const Table& table, ServerConfig& config, ServerConfi
     if (!apply_timeout_values(table, config, result)) {
         return false;
     }
-    return apply_limit_values(table, config, result);
+    if (!apply_limit_values(table, config, result)) {
+        return false;
+    }
+    if (!apply_route_values(table, config, result)) {
+        return false;
+    }
+    return true;
 }
 
 }  // namespace

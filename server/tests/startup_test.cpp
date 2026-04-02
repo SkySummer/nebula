@@ -52,7 +52,10 @@ void test_startup_loads_file_when_config_argument_present() {
     write_file(config_file,
                "[server]\n"
                "port = 9091\n"
-               "backlog = 128\n");
+               "backlog = 128\n"
+               "\n"
+               "[routes]\n"
+               "root_default_path = \"/healthz\"\n");
 
     const StartupResult startup = startup_with_args({"nebula", "--config", config_file.string()});
     expect_true(startup.ok, "explicit config startup should succeed");

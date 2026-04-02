@@ -26,7 +26,7 @@ public:
     void dispatch(ReactorRequestTask task);
 
 private:
-    [[nodiscard]] http::HttpResponse dispatch_request(const http::HttpRequest& request) const;
+    [[nodiscard]] http::HttpResponse dispatch_request(http::HttpRequest request) const;
     void submit_error_response(ReactorRequestTask task);
 
     std::shared_ptr<http::Router> router_;

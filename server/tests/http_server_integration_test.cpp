@@ -8,6 +8,7 @@
 #include <cstring>
 #include <future>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -35,19 +36,12 @@ using nebula::testsupport::expect_not_contains;
 using nebula::testsupport::expect_true;
 using RunResult = nebula::server::RunResult;
 
-std::shared_ptr<nebula::http::Router> build_default_router() {
+std::shared_ptr<nebula::http::Router> build_default_router(
+    std::optional<std::string> root_default_path = std::string("/healthz")) {
     auto router = std::make_shared<nebula::http::Router>();
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/",
-                                  [](const nebula::http::HttpRequest&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::TemporaryRedirect;
-                                      response.headers.emplace("Location", "/healthz");
-                                      return response;
-                                  }),
-                "add default root route should succeed");
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/healthz",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "application/json");
@@ -56,14 +50,46 @@ std::shared_ptr<nebula::http::Router> build_default_router() {
                                   }),
                 "add default healthz route should succeed");
     expect_true(router->add_route(nebula::http::HttpMethod::Post, "/echo",
-                                  [](const nebula::http::HttpRequest& request) {
+                                  [](const nebula::http::RouteContext& context) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "application/json");
-                                      response.body = request.body;
+                                      response.body = context.request.body;
                                       return response;
                                   }),
                 "add default echo route should succeed");
+
+    if (!root_default_path.has_value()) {
+        return router;
+    }
+
+    expect_true(*root_default_path != "/", "root mapping to self should be rejected in test setup");
+    expect_true(router->has_route_match(nebula::http::HttpMethod::Get, *root_default_path),
+                "root mapping target should be registered in test setup");
+
+    const std::weak_ptr<nebula::http::Router> router_ref = router;
+    const std::string& target_path = *root_default_path;
+    expect_true(router->add_route(
+                    nebula::http::HttpMethod::Get, "/",
+                    [router_ref, target_path = std::string(target_path)](const nebula::http::RouteContext& context) {
+                        const std::shared_ptr<nebula::http::Router> mapped_router = router_ref.lock();
+                        nebula::http::HttpResponse not_found;
+                        not_found.status = nebula::http::HttpStatus::NotFound;
+
+                        if (mapped_router == nullptr) {
+                            return not_found;
+                        }
+
+                        nebula::http::HttpRequest mapped_request = context.request;
+                        mapped_request.path = target_path;
+                        const nebula::http::RouteDispatchResult mapped =
+                            mapped_router->dispatch(std::move(mapped_request));
+                        if (mapped.status != nebula::http::RouteStatus::Matched) {
+                            return not_found;
+                        }
+                        return mapped.response;
+                    }),
+                "add mapped root route should succeed");
 
     return router;
 }
@@ -548,7 +574,7 @@ void test_healthz_endpoint_with_query() {
     expect_contains(response, R"({"status":"ok"})", "healthz with query should return expected json body");
 }
 
-void test_root_redirects_to_healthz() {
+void test_root_endpoint_mapped_to_healthz_by_default() {
     nebula::server::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
@@ -568,8 +594,31 @@ void test_root_redirects_to_healthz() {
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 307 Temporary Redirect", "root should redirect to healthz");
-    expect_contains(response, "Location: /healthz", "root redirect should include location header");
+    expect_contains(response, "HTTP/1.1 200 OK", "default root mapping should return 200");
+    expect_contains(response, R"({"status":"ok"})", "default root mapping should return healthz body");
+}
+
+void test_root_endpoint_not_found_when_root_mapping_disabled() {
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    auto server = build_runtime(config, build_default_router(std::nullopt));
+
+    std::thread server_thread([&server]() { server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    const int fd = connect_localhost(server.listening_port());
+    expect_true(fd >= 0, "connect should succeed");
+
+    const std::string request = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    expect_true(send_all(fd, request), "send request should succeed");
+
+    std::string carry;
+    const std::string response = read_one_response(fd, carry);
+    ::close(fd);
+
+    expect_contains(response, "HTTP/1.1 404 Not Found", "root should return 404 when mapping is disabled");
 }
 
 void test_head_method_suppresses_body() {
@@ -581,7 +630,7 @@ void test_head_method_suppresses_body() {
 
     const std::string route_body = "head-body-should-not-appear";
     expect_true(router->add_route(nebula::http::HttpMethod::Head, "/headz",
-                                  [route_body](const nebula::http::HttpRequest&) {
+                                  [route_body](const nebula::http::RouteContext&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
@@ -784,7 +833,7 @@ void test_client_reset_during_response_keeps_server_running() {
     auto server = build_runtime(config, router);
 
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-reset",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       std::this_thread::sleep_for(150ms);
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
@@ -830,7 +879,7 @@ void test_stale_async_response_not_delivered_to_new_connection() {
     auto server = build_runtime(config, router);
 
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-fd-reuse",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       std::this_thread::sleep_for(250ms);
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
@@ -1139,7 +1188,7 @@ void test_graceful_stop_completes_inflight_request() {
     const auto router = build_default_router();
     auto server = build_runtime(config, router);
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-graceful",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       std::this_thread::sleep_for(250ms);
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
@@ -1184,7 +1233,7 @@ void test_graceful_stop_rejects_new_connections_quickly() {
     const auto router = build_default_router();
     auto server = build_runtime(config, router);
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-gate",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       std::this_thread::sleep_for(300ms);
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
@@ -1245,7 +1294,7 @@ void test_graceful_stop_timeout_forces_close_in_bounded_time() {
     const auto router = build_default_router();
     auto server = build_runtime(config, router);
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-timeout",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       std::this_thread::sleep_for(2s);
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
@@ -1324,7 +1373,7 @@ void test_graceful_stop_client_disconnect_does_not_timeout_on_late_response() {
 
     expect_true(
         router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-reset",
-                          [release_handler, &handler_started_promise](const nebula::http::HttpRequest&) mutable {
+                          [release_handler, &handler_started_promise](const nebula::http::RouteContext&) mutable {
                               handler_started_promise.set_value();
 
                               release_handler.wait_for(2s);
@@ -1396,7 +1445,7 @@ void test_add_route_while_running() {
     expect_contains(before_response, "HTTP/1.1 404 Not Found", "new route should be 404 before add_route");
 
     expect_true(router->add_route(nebula::http::HttpMethod::Get, path,
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
@@ -1405,7 +1454,7 @@ void test_add_route_while_running() {
                                   }),
                 "first add route should succeed");
     expect_true(!router->add_route(nebula::http::HttpMethod::Get, path,
-                                   [](const nebula::http::HttpRequest&) {
+                                   [](const nebula::http::RouteContext&) {
                                        nebula::http::HttpResponse response;
                                        response.status = nebula::http::HttpStatus::OK;
                                        response.headers.emplace("Content-Type", "text/plain");
@@ -1480,7 +1529,7 @@ void test_mod_route_while_running() {
     expect_contains(before_response, R"({"status":"ok"})", "healthz default body should exist before mod_route");
 
     expect_true(router->mod_route(nebula::http::HttpMethod::Get, "/healthz",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
@@ -1489,7 +1538,7 @@ void test_mod_route_while_running() {
                                   }),
                 "mod existing route should succeed");
     expect_true(!router->mod_route(nebula::http::HttpMethod::Get, "/missing",
-                                   [](const nebula::http::HttpRequest&) {
+                                   [](const nebula::http::RouteContext&) {
                                        nebula::http::HttpResponse response;
                                        response.status = nebula::http::HttpStatus::OK;
                                        response.headers.emplace("Content-Type", "text/plain");
@@ -1511,7 +1560,7 @@ void test_method_not_allowed_includes_allow_header() {
     auto server = build_runtime(config, router);
 
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/allow-check",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
@@ -1520,7 +1569,7 @@ void test_method_not_allowed_includes_allow_header() {
                                   }),
                 "add get route should succeed");
     expect_true(router->add_route(nebula::http::HttpMethod::Post, "/allow-check",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
@@ -1546,6 +1595,85 @@ void test_method_not_allowed_includes_allow_header() {
     expect_contains(response, "HTTP/1.1 405 Method Not Allowed", "unknown route method should return 405");
     expect_contains(response, "\r\nAllow: GET, POST\r\n", "405 should include Allow header with method set");
     expect_contains(response, "Method Not Allowed", "error body should keep method not allowed text");
+}
+
+void test_dynamic_route_runtime_match_and_params() {
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
+
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/users/{id}",
+                                  [](const nebula::http::RouteContext& context) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "user=" + context.params.at("id");
+                                      return response;
+                                  }),
+                "add dynamic route should succeed");
+
+    std::thread server_thread([&server]() { server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    const int fd = connect_localhost(server.listening_port());
+    expect_true(fd >= 0, "connect should succeed");
+
+    const std::string request = "GET /users/42 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    expect_true(send_all(fd, request), "send request should succeed");
+
+    std::string carry;
+    const std::string response = read_one_response(fd, carry);
+    ::close(fd);
+
+    expect_contains(response, "HTTP/1.1 200 OK", "dynamic route should return 200");
+    expect_contains(response, "user=42", "dynamic route should pass path param to handler");
+}
+
+void test_static_route_precedence_over_dynamic_route_runtime() {
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    const auto router = build_default_router();
+    auto server = build_runtime(config, router);
+
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/priority/{id}",
+                                  [](const nebula::http::RouteContext&) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "dynamic";
+                                      return response;
+                                  }),
+                "add dynamic route should succeed");
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/priority/me",
+                                  [](const nebula::http::RouteContext&) {
+                                      nebula::http::HttpResponse response;
+                                      response.status = nebula::http::HttpStatus::OK;
+                                      response.headers.emplace("Content-Type", "text/plain");
+                                      response.body = "static";
+                                      return response;
+                                  }),
+                "add static route should succeed");
+
+    std::thread server_thread([&server]() { server.run(); });
+    ServerThreadGuard server_guard(server, server_thread);
+    wait_until_server_ready(server);
+
+    const int fd = connect_localhost(server.listening_port());
+    expect_true(fd >= 0, "connect should succeed");
+
+    const std::string request = "GET /priority/me HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    expect_true(send_all(fd, request), "send request should succeed");
+
+    std::string carry;
+    const std::string response = read_one_response(fd, carry);
+    ::close(fd);
+
+    expect_contains(response, "HTTP/1.1 200 OK", "matched route should return 200");
+    expect_contains(response, "static", "static route should be preferred over dynamic route");
 }
 
 void test_chunked_request_echo_endpoint() {
@@ -1876,7 +2004,7 @@ void test_processing_state_pending_buffer_limit() {
     const auto router = build_default_router();
     auto server = build_runtime(config, router);
     expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow",
-                                  [](const nebula::http::HttpRequest&) {
+                                  [](const nebula::http::RouteContext&) {
                                       std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
                                       nebula::http::HttpResponse response;
@@ -1922,7 +2050,8 @@ int run_http_server_integration_tests() {
         {"healthz endpoint", test_healthz_endpoint},
         {"healthz endpoint absolute form", test_healthz_endpoint_absolute_form},
         {"healthz endpoint with query", test_healthz_endpoint_with_query},
-        {"root redirects to healthz", test_root_redirects_to_healthz},
+        {"root endpoint mapped to healthz by default", test_root_endpoint_mapped_to_healthz_by_default},
+        {"root endpoint not found when root mapping disabled", test_root_endpoint_not_found_when_root_mapping_disabled},
         {"head method suppresses body", test_head_method_suppresses_body},
         {"echo endpoint", test_echo_endpoint},
         {"request completed log uses raw request line", test_request_completed_log_uses_raw_request_line},
@@ -1955,6 +2084,8 @@ int run_http_server_integration_tests() {
         {"del route while running", test_del_route_while_running},
         {"mod route while running", test_mod_route_while_running},
         {"method not allowed includes allow header", test_method_not_allowed_includes_allow_header},
+        {"dynamic route runtime match and params", test_dynamic_route_runtime_match_and_params},
+        {"static route precedence over dynamic route runtime", test_static_route_precedence_over_dynamic_route_runtime},
         {"chunked request echo endpoint", test_chunked_request_echo_endpoint},
         {"chunked many boundaries within decoded limit returns 200",
          test_chunked_many_boundaries_within_decoded_limit_returns_200},
