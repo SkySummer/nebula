@@ -188,7 +188,7 @@ void Logger::init(LogLevel default_level, std::filesystem::path log_dir, bool al
 
     const auto now = std::chrono::system_clock::now();
     const TimeText time_text = format_local_time_text(now);
-    rotate_file_if_needed_unlocked(time_text.date, time_text.timestamp);
+    rotate_file_if_needed_locked(time_text.date, time_text.timestamp);
 }
 
 void Logger::set_level(LogLevel level) {
@@ -203,20 +203,20 @@ LogLevel Logger::level() const {
 
 void Logger::log(LogLevel level, std::string_view event, std::span<const Field> fields) {
     std::lock_guard lock(mutex_);
-    ensure_initialized_unlocked();
+    ensure_initialized_locked();
     if (!should_log(level)) {
         return;
     }
 
     const auto now = std::chrono::system_clock::now();
     const TimeText time_text = format_local_time_text(now);
-    rotate_file_if_needed_unlocked(time_text.date, time_text.timestamp);
+    rotate_file_if_needed_locked(time_text.date, time_text.timestamp);
 
     const std::string line = format_log_line(time_text.timestamp, level, event, fields);
-    write_line_unlocked(line);
+    write_line_locked(line);
 }
 
-void Logger::ensure_initialized_unlocked() {
+void Logger::ensure_initialized_locked() {
     if (initialized_) {
         return;
     }
@@ -224,7 +224,7 @@ void Logger::ensure_initialized_unlocked() {
 
     const auto now = std::chrono::system_clock::now();
     const TimeText time_text = format_local_time_text(now);
-    rotate_file_if_needed_unlocked(time_text.date, time_text.timestamp);
+    rotate_file_if_needed_locked(time_text.date, time_text.timestamp);
 
     const std::array<Field, 3> fields = {
         Field("log_dir", log_dir_.string()),
@@ -232,10 +232,10 @@ void Logger::ensure_initialized_unlocked() {
         Field("decision", "continue_with_default_config"),
     };
     const std::string line = format_log_line(time_text.timestamp, LogLevel::Warning, "logger auto initialized", fields);
-    write_line_unlocked(line);
+    write_line_locked(line);
 }
 
-void Logger::rotate_file_if_needed_unlocked(std::string_view date, std::string_view timestamp) {
+void Logger::rotate_file_if_needed_locked(std::string_view date, std::string_view timestamp) {
     if (current_date_ == date && file_.is_open()) {
         return;
     }
@@ -278,7 +278,7 @@ void Logger::rotate_file_if_needed_unlocked(std::string_view date, std::string_v
     force_stderr_only_ = false;
 }
 
-void Logger::write_line_unlocked(std::string_view line) {
+void Logger::write_line_locked(std::string_view line) {
     if (also_stderr_ || force_stderr_only_) {
         std::cerr << line << '\n';
     }

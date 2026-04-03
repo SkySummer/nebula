@@ -152,6 +152,145 @@ void test_mod_route() {
     expect_equal(result.response.body, std::string("after"), "mod route should replace handler");
 }
 
+void test_add_route_from_source_path() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/source", plain_text_handler("shared")),
+                "add source route should succeed");
+    expect_true(router.add_route(HttpMethod::Get, "/alias", "/source"), "add alias from source path should succeed");
+
+    HttpRequest alias_request;
+    alias_request.method = HttpMethod::Get;
+    alias_request.path = "/alias";
+    const auto alias_result = router.dispatch(alias_request);
+    expect_equal(alias_result.status, RouteStatus::Matched, "alias route should match");
+    expect_equal(alias_result.response.body, std::string("shared"), "alias route should reuse source handler");
+
+    expect_true(router.del_route(HttpMethod::Get, "/source"), "del source route should succeed");
+    const auto alias_after_source_deleted = router.dispatch(alias_request);
+    expect_equal(alias_after_source_deleted.status, RouteStatus::Matched,
+                 "alias should keep handler after source route removed");
+    expect_equal(alias_after_source_deleted.response.body, std::string("shared"),
+                 "alias response should stay stable after source route removed");
+}
+
+void test_add_route_from_source_path_rejected_when_source_missing() {
+    nebula::http::Router router;
+    expect_true(!router.add_route(HttpMethod::Get, "/alias", "/missing"),
+                "add alias should fail when source path missing");
+
+    expect_true(router.add_route(HttpMethod::Post, "/source", plain_text_handler("post")),
+                "add post source route should succeed");
+    expect_true(!router.add_route(HttpMethod::Get, "/alias", "/source"),
+                "add alias should fail when source method missing");
+}
+
+void test_mod_route_from_source_path() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/source", plain_text_handler("shared")),
+                "add source route should succeed");
+    expect_true(router.add_route(HttpMethod::Get, "/target", plain_text_handler("before")),
+                "add target route should succeed");
+    expect_true(router.mod_route(HttpMethod::Get, "/target", "/source"), "mod route from source path should succeed");
+
+    HttpRequest target_request;
+    target_request.method = HttpMethod::Get;
+    target_request.path = "/target";
+    const auto target_result = router.dispatch(target_request);
+    expect_equal(target_result.status, RouteStatus::Matched, "modded route should match");
+    expect_equal(target_result.response.body, std::string("shared"), "modded route should reuse source handler");
+}
+
+void test_mod_route_from_source_path_rejected_when_source_missing() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/target", plain_text_handler("keep")),
+                "add target route should succeed");
+    expect_true(!router.mod_route(HttpMethod::Get, "/target", "/missing"),
+                "mod route should fail when source path missing");
+
+    HttpRequest target_request;
+    target_request.method = HttpMethod::Get;
+    target_request.path = "/target";
+    const auto target_result = router.dispatch(target_request);
+    expect_equal(target_result.status, RouteStatus::Matched, "failed mod should keep target route matched");
+    expect_equal(target_result.response.body, std::string("keep"), "failed mod should keep original handler");
+}
+
+void test_add_route_from_source_path_rejected_when_dynamic_keys_mismatch() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/users/{id}",
+                                 [](const nebula::http::RouteContext& context) {
+                                     return nebula::http::make_plain_text_response(HttpStatus::OK,
+                                                                                   context.params.at("id"));
+                                 }),
+                "add source dynamic route should succeed");
+    expect_true(!router.add_route(HttpMethod::Get, "/members/{member_id}", "/users/{id}"),
+                "add alias should fail when dynamic keys mismatch");
+    expect_true(router.add_route(HttpMethod::Get, "/members/{id}", "/users/{id}"),
+                "add alias should succeed when dynamic keys are aligned");
+
+    HttpRequest request;
+    request.method = HttpMethod::Get;
+    request.path = "/members/42";
+    const auto result = router.dispatch(request);
+    expect_equal(result.status, RouteStatus::Matched, "aligned dynamic alias route should match");
+    expect_equal(result.response.body, std::string("42"),
+                 "aligned dynamic alias should preserve param lookup semantics");
+}
+
+void test_mod_route_from_source_path_rejected_when_dynamic_keys_mismatch() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/users/{id}",
+                                 [](const nebula::http::RouteContext& context) {
+                                     return nebula::http::make_plain_text_response(HttpStatus::OK,
+                                                                                   context.params.at("id"));
+                                 }),
+                "add source dynamic route should succeed");
+    expect_true(router.add_route(HttpMethod::Get, "/members/{member_id}", plain_text_handler("keep")),
+                "add target route should succeed");
+    expect_true(!router.mod_route(HttpMethod::Get, "/members/{member_id}", "/users/{id}"),
+                "mod should fail when dynamic keys mismatch");
+
+    HttpRequest mismatched_request;
+    mismatched_request.method = HttpMethod::Get;
+    mismatched_request.path = "/members/42";
+    const auto mismatched_result = router.dispatch(mismatched_request);
+    expect_equal(mismatched_result.status, RouteStatus::Matched, "failed mod should keep target route matched");
+    expect_equal(mismatched_result.response.body, std::string("keep"), "failed mod should keep original handler");
+
+    expect_true(router.add_route(HttpMethod::Get, "/profiles/{id}", plain_text_handler("before")),
+                "add aligned target route should succeed");
+    expect_true(router.mod_route(HttpMethod::Get, "/profiles/{id}", "/users/{id}"),
+                "mod should succeed when dynamic keys are aligned");
+
+    HttpRequest aligned_request;
+    aligned_request.method = HttpMethod::Get;
+    aligned_request.path = "/profiles/7";
+    const auto aligned_result = router.dispatch(aligned_request);
+    expect_equal(aligned_result.status, RouteStatus::Matched, "aligned modded route should match");
+    expect_equal(aligned_result.response.body, std::string("7"), "aligned modded route should preserve param lookup");
+}
+
+void test_add_route_from_source_path_allows_dynamic_key_order_difference() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/users/{id}/posts/{post_id}",
+                                 [](const nebula::http::RouteContext& context) {
+                                     return nebula::http::make_plain_text_response(
+                                         HttpStatus::OK, context.params.at("id") + "-" + context.params.at("post_id"));
+                                 }),
+                "add source dynamic route should succeed");
+
+    expect_true(router.add_route(HttpMethod::Get, "/members/{post_id}/posts/{id}", "/users/{id}/posts/{post_id}"),
+                "add alias should succeed when dynamic key order differs");
+
+    HttpRequest request;
+    request.method = HttpMethod::Get;
+    request.path = "/members/10/posts/99";
+    const auto result = router.dispatch(request);
+    expect_equal(result.status, RouteStatus::Matched, "alias route with reordered dynamic keys should match");
+    expect_equal(result.response.body, std::string("99-10"),
+                 "alias route should preserve lookup by param name when key order differs");
+}
+
 void test_add_route_reject_empty_handler() {
     nebula::http::Router router;
 
@@ -281,6 +420,22 @@ void test_reject_ambiguous_dynamic_route() {
                 "dynamic route with different param name on same level should fail");
 }
 
+void test_reject_duplicate_dynamic_param_name_in_route_path() {
+    nebula::http::Router router;
+    expect_true(!router.add_route(HttpMethod::Get, "/profile/{id}/{id}", plain_text_handler("duplicate")),
+                "dynamic route with duplicated param names should fail");
+
+    HttpRequest duplicate_request;
+    duplicate_request.method = HttpMethod::Get;
+    duplicate_request.path = "/profile/42/7";
+    const auto duplicate_result = router.dispatch(duplicate_request);
+    expect_equal(duplicate_result.status, RouteStatus::NotFound,
+                 "failed dynamic route registration should not create a routable path");
+
+    expect_true(router.add_route(HttpMethod::Get, "/profile/{id}/{post_id}", plain_text_handler("ok")),
+                "dynamic route with unique param names should succeed");
+}
+
 void test_dynamic_route_mod_and_del() {
     nebula::http::Router router;
     expect_true(router.add_route(HttpMethod::Get, "/books/{id}", plain_text_handler("before")),
@@ -368,6 +523,18 @@ int run_router_tests() {
         {"method not allowed", test_method_not_allowed},
         {"add route no duplicate", test_add_route_no_duplicate},
         {"mod route", test_mod_route},
+        {"add route from source path", test_add_route_from_source_path},
+        {"add route from source path rejected when source missing",
+         test_add_route_from_source_path_rejected_when_source_missing},
+        {"mod route from source path", test_mod_route_from_source_path},
+        {"mod route from source path rejected when source missing",
+         test_mod_route_from_source_path_rejected_when_source_missing},
+        {"add route from source path rejected when dynamic keys mismatch",
+         test_add_route_from_source_path_rejected_when_dynamic_keys_mismatch},
+        {"mod route from source path rejected when dynamic keys mismatch",
+         test_mod_route_from_source_path_rejected_when_dynamic_keys_mismatch},
+        {"add route from source path allows dynamic key order difference",
+         test_add_route_from_source_path_allows_dynamic_key_order_difference},
         {"add route reject empty handler", test_add_route_reject_empty_handler},
         {"mod route reject empty handler", test_mod_route_reject_empty_handler},
         {"reject empty path", test_reject_empty_path},
@@ -376,6 +543,7 @@ int run_router_tests() {
         {"dynamic route reject empty param segment", test_dynamic_route_reject_empty_param_segment},
         {"static route preferred over dynamic route", test_static_route_preferred_over_dynamic_route},
         {"reject ambiguous dynamic route", test_reject_ambiguous_dynamic_route},
+        {"reject duplicate dynamic param name in route path", test_reject_duplicate_dynamic_param_name_in_route_path},
         {"dynamic route mod and del", test_dynamic_route_mod_and_del},
         {"has route query semantics", test_has_route_query_semantics},
         {"add route and dispatch concurrent", test_add_route_and_dispatch_concurrent},

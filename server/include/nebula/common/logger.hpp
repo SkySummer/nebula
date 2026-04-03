@@ -98,9 +98,9 @@ private:
     Logger() = default;
 
     void log(LogLevel level, std::string_view event, std::span<const Field> fields);
-    void ensure_initialized_unlocked();
-    void rotate_file_if_needed_unlocked(std::string_view date, std::string_view timestamp);
-    void write_line_unlocked(std::string_view line);
+    void ensure_initialized_locked();
+    void rotate_file_if_needed_locked(std::string_view date, std::string_view timestamp);
+    void write_line_locked(std::string_view line);
 
     [[nodiscard]] bool should_log(LogLevel level) const;
 

@@ -1,6 +1,5 @@
 #include "nebula/server/main_options.hpp"
 
-#include <span>
 #include <string>
 #include <vector>
 
@@ -9,18 +8,14 @@
 namespace {
 
 using nebula::server::MainOptionsParseResult;
+using nebula::testsupport::ArgvBuilder;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
 
 MainOptionsParseResult parse(const std::vector<std::string>& args) {
-    std::vector<std::string> storage = args;
-    std::vector<char*> argv;
-    argv.reserve(storage.size());
-    for (std::string& item : storage) {
-        argv.push_back(item.data());
-    }
-    return nebula::server::parse_main_options(std::span<char*>(argv.data(), argv.size()));
+    ArgvBuilder argv(args);
+    return nebula::server::parse_main_options(argv.span());
 }
 
 void test_default_options() {

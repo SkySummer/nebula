@@ -1,7 +1,5 @@
 #include "nebula/server/startup.hpp"
 
-#include <fstream>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -12,27 +10,16 @@ namespace {
 using nebula::server::ServerConfig;
 using nebula::server::ServerConfigSource;
 using nebula::server::StartupResult;
+using nebula::testsupport::ArgvBuilder;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
 using nebula::testsupport::TempDir;
+using nebula::testsupport::write_file;
 
 StartupResult startup_with_args(const std::vector<std::string>& args) {
-    std::vector<std::string> storage = args;
-    std::vector<char*> argv;
-    argv.reserve(storage.size());
-    for (std::string& item : storage) {
-        argv.push_back(item.data());
-    }
-    return StartupResult(std::span<char*>(argv.data(), argv.size()));
-}
-
-void write_file(const std::filesystem::path& path, const std::string& content) {
-    std::ofstream stream(path);
-    expect_true(stream.is_open(), "config file should open for write");
-    stream << content;
-    stream.flush();
-    expect_true(stream.good(), "config file should flush successfully");
+    ArgvBuilder argv(args);
+    return StartupResult(argv.span());
 }
 
 void test_default_startup_uses_default_config_without_file_loading() {

@@ -61,6 +61,36 @@ bool parse_route_segments(std::string_view path, std::vector<RouteSegment>& out_
     return true;
 }
 
+std::vector<std::string> collect_dynamic_param_keys(const std::vector<RouteSegment>& segments) {
+    std::vector<std::string> keys;
+    keys.reserve(segments.size());
+    for (const RouteSegment& segment : segments) {
+        if (!segment.dynamic) {
+            continue;
+        }
+        keys.push_back(segment.value);
+    }
+    std::ranges::sort(keys);
+    const auto deduplicated = std::ranges::unique(keys);
+    keys.erase(deduplicated.begin(), deduplicated.end());
+    return keys;
+}
+
+bool has_same_dynamic_param_keys(const std::vector<RouteSegment>& lhs_segments,
+                                 const std::vector<RouteSegment>& rhs_segments) {
+    return collect_dynamic_param_keys(lhs_segments) == collect_dynamic_param_keys(rhs_segments);
+}
+
+bool has_duplicate_dynamic_param_keys(const std::vector<RouteSegment>& segments) {
+    std::size_t dynamic_param_count = 0U;
+    for (const RouteSegment& segment : segments) {
+        if (segment.dynamic) {
+            ++dynamic_param_count;
+        }
+    }
+    return collect_dynamic_param_keys(segments).size() != dynamic_param_count;
+}
+
 bool node_is_empty(const Router::RouteNode& node) {
     return node.handlers.empty() && node.static_children.empty() && !node.dynamic_child.has_value();
 }
@@ -163,6 +193,101 @@ const Router::RouteNode* find_matched_route_node(const Router::RouteNode& root,
     return find_match_route_node(root, segments, 0U, params);
 }
 
+bool add_route_with_handler_locked(Router::RouteNode& root,
+                                   std::unordered_map<std::string, Router::ExactMethodSet>& exact_route_index,
+                                   HttpMethod method, const std::string& path,
+                                   const std::vector<RouteSegment>& segments, Router::HandlerPtr handler) {
+    Router::RouteNode* current = &root;
+    for (const RouteSegment& segment : segments) {
+        if (!segment.dynamic) {
+            auto& child = current->static_children[segment.value];
+            if (!child) {
+                child = std::make_unique<Router::RouteNode>();
+            }
+            current = child.get();
+            continue;
+        }
+
+        if (!current->dynamic_child.has_value()) {
+            current->dynamic_child = Router::DynamicChild{
+                .param_name = segment.value,
+                .node = std::make_unique<Router::RouteNode>(),
+            };
+        } else if (current->dynamic_child->param_name != segment.value) {
+            common::Logger::instance()
+                .warn("add route rejected")
+                .field("method", to_string(method))
+                .field("path", path)
+                .field("error", "ambiguous_dynamic_segment");
+            return false;
+        }
+        current = current->dynamic_child->node.get();
+    }
+
+    const auto [handler_it, inserted] = current->handlers.emplace(method, std::move(handler));
+    if (!inserted) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "duplicate_route");
+        return false;
+    }
+
+    exact_route_index[path][method] = true;
+
+    common::Logger::instance().info("route added").field("method", to_string(method)).field("path", path);
+    return true;
+}
+
+bool mod_route_with_handler_locked(Router::RouteNode& root,
+                                   const std::unordered_map<std::string, Router::ExactMethodSet>& exact_route_index,
+                                   HttpMethod method, const std::string& path,
+                                   const std::vector<RouteSegment>& segments, Router::HandlerPtr handler) {
+    const auto exact_path_it = exact_route_index.find(path);
+    if (exact_path_it == exact_route_index.end()) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "path_not_found");
+        return false;
+    }
+
+    if (!exact_path_it->second.contains(method)) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "method_not_found");
+        return false;
+    }
+
+    Router::RouteNode* route_node = find_exact_route_node(root, segments);
+    if (route_node == nullptr) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "path_not_found");
+        return false;
+    }
+
+    auto method_it = route_node->handlers.find(method);
+    if (method_it == route_node->handlers.end()) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "method_not_found");
+        return false;
+    }
+
+    method_it->second = std::move(handler);
+    common::Logger::instance().info("route modified").field("method", to_string(method)).field("path", path);
+    return true;
+}
+
 }  // namespace
 
 bool Router::add_route(HttpMethod method, const std::string& path, Handler handler) {
@@ -192,49 +317,131 @@ bool Router::add_route(HttpMethod method, const std::string& path, Handler handl
             .field("error", "invalid_dynamic_segment");
         return false;
     }
-
-    const std::unique_lock lock(route_mutex_);
-    RouteNode* current = &root_;
-    for (const RouteSegment& segment : segments) {
-        if (!segment.dynamic) {
-            auto& child = current->static_children[segment.value];
-            if (!child) {
-                child = std::make_unique<RouteNode>();
-            }
-            current = child.get();
-            continue;
-        }
-
-        if (!current->dynamic_child.has_value()) {
-            current->dynamic_child = DynamicChild{
-                .param_name = segment.value,
-                .node = std::make_unique<RouteNode>(),
-            };
-        } else if (current->dynamic_child->param_name != segment.value) {
-            common::Logger::instance()
-                .warn("add route rejected")
-                .field("method", to_string(method))
-                .field("path", path)
-                .field("error", "ambiguous_dynamic_segment");
-            return false;
-        }
-        current = current->dynamic_child->node.get();
-    }
-
-    const auto [handler_it, inserted] = current->handlers.emplace(method, std::move(handler));
-    if (!inserted) {
+    if (has_duplicate_dynamic_param_keys(segments)) {
         common::Logger::instance()
             .warn("add route rejected")
             .field("method", to_string(method))
             .field("path", path)
-            .field("error", "duplicate_route");
+            .field("error", "duplicate_dynamic_param");
         return false;
     }
 
-    exact_route_index_[path][method] = true;
+    auto handler_ptr = std::make_shared<Handler>(std::move(handler));
+    const std::unique_lock lock(route_mutex_);
+    return add_route_with_handler_locked(root_, exact_route_index_, method, path, segments, std::move(handler_ptr));
+}
 
-    common::Logger::instance().info("route added").field("method", to_string(method)).field("path", path);
-    return true;
+bool Router::add_route(HttpMethod method, const std::string& path, const std::string& source_path) {
+    if (path.empty()) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "empty_path");
+        return false;
+    }
+    if (source_path.empty()) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "empty_source_path");
+        return false;
+    }
+
+    std::vector<RouteSegment> segments;
+    if (!parse_route_segments(path, segments)) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "invalid_dynamic_segment");
+        return false;
+    }
+    if (has_duplicate_dynamic_param_keys(segments)) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "duplicate_dynamic_param");
+        return false;
+    }
+
+    std::vector<RouteSegment> source_segments;
+    if (!parse_route_segments(source_path, source_segments)) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "invalid_source_dynamic_segment");
+        return false;
+    }
+    if (has_duplicate_dynamic_param_keys(source_segments)) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "duplicate_source_dynamic_param");
+        return false;
+    }
+    if (!has_same_dynamic_param_keys(segments, source_segments)) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "source_dynamic_keys_mismatch");
+        return false;
+    }
+
+    const std::unique_lock lock(route_mutex_);
+    const auto source_path_it = exact_route_index_.find(source_path);
+    if (source_path_it == exact_route_index_.end()) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "source_path_not_found");
+        return false;
+    }
+
+    if (!source_path_it->second.contains(method)) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "source_method_not_found");
+        return false;
+    }
+
+    const RouteNode* source_node = find_exact_route_node(root_, source_segments);
+    if (source_node == nullptr) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "source_path_not_found");
+        return false;
+    }
+
+    const auto source_method_it = source_node->handlers.find(method);
+    if (source_method_it == source_node->handlers.end() || source_method_it->second == nullptr) {
+        common::Logger::instance()
+            .warn("add route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "source_method_not_found");
+        return false;
+    }
+
+    return add_route_with_handler_locked(root_, exact_route_index_, method, path, segments, source_method_it->second);
 }
 
 bool Router::mod_route(HttpMethod method, const std::string& path, Handler handler) {
@@ -264,51 +471,131 @@ bool Router::mod_route(HttpMethod method, const std::string& path, Handler handl
             .field("error", "invalid_dynamic_segment");
         return false;
     }
+    if (has_duplicate_dynamic_param_keys(segments)) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "duplicate_dynamic_param");
+        return false;
+    }
+
+    auto handler_ptr = std::make_shared<Handler>(std::move(handler));
+    const std::unique_lock lock(route_mutex_);
+    return mod_route_with_handler_locked(root_, exact_route_index_, method, path, segments, std::move(handler_ptr));
+}
+
+bool Router::mod_route(HttpMethod method, const std::string& path, const std::string& source_path) {
+    if (path.empty()) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "empty_path");
+        return false;
+    }
+    if (source_path.empty()) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "empty_source_path");
+        return false;
+    }
+
+    std::vector<RouteSegment> segments;
+    if (!parse_route_segments(path, segments)) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "invalid_dynamic_segment");
+        return false;
+    }
+    if (has_duplicate_dynamic_param_keys(segments)) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("error", "duplicate_dynamic_param");
+        return false;
+    }
+
+    std::vector<RouteSegment> source_segments;
+    if (!parse_route_segments(source_path, source_segments)) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "invalid_source_dynamic_segment");
+        return false;
+    }
+    if (has_duplicate_dynamic_param_keys(source_segments)) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "duplicate_source_dynamic_param");
+        return false;
+    }
+    if (!has_same_dynamic_param_keys(segments, source_segments)) {
+        common::Logger::instance()
+            .warn("mod route rejected")
+            .field("method", to_string(method))
+            .field("path", path)
+            .field("source_path", source_path)
+            .field("error", "source_dynamic_keys_mismatch");
+        return false;
+    }
 
     const std::unique_lock lock(route_mutex_);
-    const auto exact_path_it = exact_route_index_.find(path);
-    if (exact_path_it == exact_route_index_.end()) {
+    const auto source_path_it = exact_route_index_.find(source_path);
+    if (source_path_it == exact_route_index_.end()) {
         common::Logger::instance()
             .warn("mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
-            .field("error", "path_not_found");
+            .field("source_path", source_path)
+            .field("error", "source_path_not_found");
         return false;
     }
 
-    if (!exact_path_it->second.contains(method)) {
+    if (!source_path_it->second.contains(method)) {
         common::Logger::instance()
             .warn("mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
-            .field("error", "method_not_found");
+            .field("source_path", source_path)
+            .field("error", "source_method_not_found");
         return false;
     }
 
-    RouteNode* route_node = find_exact_route_node(root_, segments);
-    if (route_node == nullptr) {
+    const RouteNode* source_node = find_exact_route_node(root_, source_segments);
+    if (source_node == nullptr) {
         common::Logger::instance()
             .warn("mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
-            .field("error", "path_not_found");
+            .field("source_path", source_path)
+            .field("error", "source_path_not_found");
         return false;
     }
 
-    auto method_it = route_node->handlers.find(method);
-    if (method_it == route_node->handlers.end()) {
+    const auto source_method_it = source_node->handlers.find(method);
+    if (source_method_it == source_node->handlers.end() || source_method_it->second == nullptr) {
         common::Logger::instance()
             .warn("mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
-            .field("error", "method_not_found");
+            .field("source_path", source_path)
+            .field("error", "source_method_not_found");
         return false;
     }
 
-    method_it->second = std::move(handler);
-
-    common::Logger::instance().info("route modified").field("method", to_string(method)).field("path", path);
-    return true;
+    return mod_route_with_handler_locked(root_, exact_route_index_, method, path, segments, source_method_it->second);
 }
 
 bool Router::del_route(HttpMethod method, const std::string& path) {
@@ -391,7 +678,7 @@ bool Router::has_route_exact(HttpMethod method, const std::string& path) const {
 }
 
 RouteDispatchResult Router::dispatch(HttpRequest request) const {
-    Handler handler;
+    HandlerPtr handler;
     RouteParams params;
     std::vector<HttpMethod> allowed_methods;
     {
@@ -417,7 +704,7 @@ RouteDispatchResult Router::dispatch(HttpRequest request) const {
     }
 
     return {.status = RouteStatus::Matched,
-            .response = handler(RouteContext{.request = std::move(request), .params = std::move(params)}),
+            .response = (*handler)(RouteContext{.request = std::move(request), .params = std::move(params)}),
             .allowed_methods = {}};
 }
 

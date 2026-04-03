@@ -27,7 +27,7 @@ void report_destructor_cleanup_error(const char* action, const char* error) noex
     std::fputc('\n', stderr);
 }
 
-void report_sub_reactor_log_emit_error(std::size_t reactor_id, const char* event) noexcept {
+void report_log_emit_error(std::size_t reactor_id, const char* event) noexcept {
     std::fputs("sub reactor log emit failed: reactor_id=", stderr);
     try {
         const std::string reactor_id_text = std::to_string(reactor_id);
@@ -377,7 +377,7 @@ void HttpSubReactor::handle_run_loop_exception(const char* error) noexcept {
             .field("error", error != nullptr ? error : "unknown")
             .field("decision", "stop_loop");
     } catch (...) {
-        report_sub_reactor_log_emit_error(id_, "sub_reactor_event_loop_exception");
+        report_log_emit_error(id_, "sub_reactor_event_loop_exception");
     }
 
     notify_fatal_error_safely();
@@ -398,7 +398,7 @@ void HttpSubReactor::notify_fatal_error_safely() noexcept {
                 .field("error", callback_error.what())
                 .field("decision", "ignore");
         } catch (...) {
-            report_sub_reactor_log_emit_error(id_, "sub_reactor_fatal_callback_failed");
+            report_log_emit_error(id_, "sub_reactor_fatal_callback_failed");
         }
     } catch (...) {
         try {
@@ -408,7 +408,7 @@ void HttpSubReactor::notify_fatal_error_safely() noexcept {
                 .field("error", "unknown")
                 .field("decision", "ignore");
         } catch (...) {
-            report_sub_reactor_log_emit_error(id_, "sub_reactor_fatal_callback_failed");
+            report_log_emit_error(id_, "sub_reactor_fatal_callback_failed");
         }
     }
 }

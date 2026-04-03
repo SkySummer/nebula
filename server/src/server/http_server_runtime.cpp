@@ -54,7 +54,7 @@ void log_access_addresses(std::uint16_t listening_port) {
 }
 
 void report_destructor_cleanup_error(const char* action, const char* error) noexcept {
-    std::fputs("runtime destructor cleanup failed: action=", stderr);
+    std::fputs("server runtime destructor cleanup failed: action=", stderr);
     std::fputs(action != nullptr ? action : "unknown", stderr);
     std::fputs(", error=", stderr);
     std::fputs(error != nullptr ? error : "unknown", stderr);
@@ -63,10 +63,9 @@ void report_destructor_cleanup_error(const char* action, const char* error) noex
 }
 
 void report_log_emit_error(const char* event) noexcept {
-    std::fputs("log emit failed: event=", stderr);
+    std::fputs("server runtime log emit failed: event=", stderr);
     std::fputs(event != nullptr ? event : "unknown", stderr);
-    std::fputs(", error=logger_emit_failed", stderr);
-    std::fputs(", decision=ignore", stderr);
+    std::fputs(", error=logger_emit_failed, decision=ignore", stderr);
     std::fputc('\n', stderr);
 }
 

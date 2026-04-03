@@ -67,28 +67,7 @@ std::shared_ptr<nebula::http::Router> build_default_router(
     expect_true(router->has_route_match(nebula::http::HttpMethod::Get, *root_default_path),
                 "root mapping target should be registered in test setup");
 
-    const std::weak_ptr<nebula::http::Router> router_ref = router;
-    const std::string& target_path = *root_default_path;
-    expect_true(router->add_route(
-                    nebula::http::HttpMethod::Get, "/",
-                    [router_ref, target_path = std::string(target_path)](const nebula::http::RouteContext& context) {
-                        const std::shared_ptr<nebula::http::Router> mapped_router = router_ref.lock();
-                        nebula::http::HttpResponse not_found;
-                        not_found.status = nebula::http::HttpStatus::NotFound;
-
-                        if (mapped_router == nullptr) {
-                            return not_found;
-                        }
-
-                        nebula::http::HttpRequest mapped_request = context.request;
-                        mapped_request.path = target_path;
-                        const nebula::http::RouteDispatchResult mapped =
-                            mapped_router->dispatch(std::move(mapped_request));
-                        if (mapped.status != nebula::http::RouteStatus::Matched) {
-                            return not_found;
-                        }
-                        return mapped.response;
-                    }),
+    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/", *root_default_path),
                 "add mapped root route should succeed");
 
     return router;

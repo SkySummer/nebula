@@ -36,9 +36,12 @@ struct RouteDispatchResult {
 class Router {
 public:
     using Handler = std::function<HttpResponse(const RouteContext&)>;
+    using HandlerPtr = std::shared_ptr<Handler>;
 
     bool add_route(HttpMethod method, const std::string& path, Handler handler);
+    bool add_route(HttpMethod method, const std::string& path, const std::string& source_path);
     bool mod_route(HttpMethod method, const std::string& path, Handler handler);
+    bool mod_route(HttpMethod method, const std::string& path, const std::string& source_path);
     bool del_route(HttpMethod method, const std::string& path);
     [[nodiscard]] bool has_route_match(HttpMethod method, const std::string& path) const;
     [[nodiscard]] bool has_route_exact(HttpMethod method, const std::string& path) const;
@@ -50,7 +53,7 @@ public:
         }
     };
 
-    using MethodMap = std::unordered_map<HttpMethod, Handler, HttpMethodHash>;
+    using MethodMap = std::unordered_map<HttpMethod, HandlerPtr, HttpMethodHash>;
     using ExactMethodSet = std::unordered_map<HttpMethod, bool, HttpMethodHash>;
 
     struct RouteNode;

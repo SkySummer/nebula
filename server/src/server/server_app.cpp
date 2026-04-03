@@ -1,12 +1,13 @@
 #include "nebula/server/server_app.hpp"
 
+#include <cstdio>
+#include <exception>
 #include <iostream>
 #include <memory>
 #include <string>
-#include <string_view>
+#include <utility>
 
 #include "nebula/common/logger.hpp"
-#include "nebula/http/http_response_writer.hpp"
 #include "nebula/http/router.hpp"
 #include "nebula/server/http_server.hpp"
 
@@ -14,8 +15,40 @@ namespace nebula::server {
 
 namespace {
 
-bool path_contains_route_template_marker(std::string_view path) {
-    return path.find('{') != std::string_view::npos || path.find('}') != std::string_view::npos;
+void report_log_emit_error(const char* event) noexcept {
+    std::fputs("server app log emit failed: event=", stderr);
+    std::fputs(event != nullptr ? event : "unknown", stderr);
+    std::fputs(", error=logger_emit_failed, decision=ignore", stderr);
+    std::fputc('\n', stderr);
+}
+
+void log_route_operation_error(const char* event, const char* fallback_event, http::HttpMethod method,
+                               const std::string& path, const char* error,
+                               const std::string* source_path = nullptr) noexcept {
+    try {
+        auto entry = common::Logger::instance().error(event != nullptr ? event : "route operation failed");
+        entry.field("method", http::to_string(method)).field("path", path);
+        if (source_path != nullptr) {
+            entry.field("source_path", *source_path);
+        }
+        entry.field("error", error != nullptr ? error : "unknown");
+    } catch (...) {
+        report_log_emit_error(fallback_event);
+    }
+}
+
+template <typename Op>
+bool execute_route_operation(const char* event, const char* fallback_event, http::HttpMethod method,
+                             const std::string& path, const std::string* source_path, Op&& operation) noexcept {
+    try {
+        return std::forward<Op>(operation)();
+    } catch (const std::exception& e) {
+        log_route_operation_error(event, fallback_event, method, path, e.what(), source_path);
+        return false;
+    } catch (...) {
+        log_route_operation_error(event, fallback_event, method, path, "unknown", source_path);
+        return false;
+    }
 }
 
 std::shared_ptr<http::Router> build_default_router(const ServerConfig& config) {
@@ -57,69 +90,125 @@ std::shared_ptr<http::Router> build_default_router(const ServerConfig& config) {
         }
     }
 
+    return router;
+}
+
+bool register_root_default_route(const ServerConfig& config, const std::shared_ptr<http::Router>& router) {
     if (!config.enable_root_default) {
-        return router;
+        return true;
     }
 
-    const std::string root_default_path = config.root_default_path;
-    if (path_contains_route_template_marker(root_default_path)) {
-        common::Logger::instance()
-            .error("register root route mapping failed")
-            .field("method", http::to_string(http::HttpMethod::Get))
-            .field("path", "/")
-            .field("target_path", root_default_path)
-            .field("error", "path_template_not_allowed")
-            .field("decision", "exit_process");
-        return nullptr;
-    }
-    if (!router->has_route_match(http::HttpMethod::Get, root_default_path)) {
-        common::Logger::instance()
-            .error("register root route mapping failed")
-            .field("method", http::to_string(http::HttpMethod::Get))
-            .field("path", "/")
-            .field("target_path", root_default_path)
-            .field("error", "path_not_found")
-            .field("decision", "exit_process");
-        return nullptr;
-    }
-
-    const std::weak_ptr<http::Router> router_ref = router;
-    const bool root_added = router->add_route(
-        http::HttpMethod::Get, "/", [router_ref, root_default_path](const http::RouteContext& context) {
-            const std::shared_ptr<http::Router> mapped_router = router_ref.lock();
-            if (mapped_router == nullptr) {
-                return http::make_error_response(http::HttpStatus::NotFound);
-            }
-
-            http::HttpRequest mapped_request = context.request;
-            mapped_request.path = root_default_path;
-
-            const http::RouteDispatchResult mapped = mapped_router->dispatch(std::move(mapped_request));
-            switch (mapped.status) {
-                case http::RouteStatus::Matched:
-                    return mapped.response;
-                case http::RouteStatus::MethodNotAllowed:
-                    return http::make_error_response(http::HttpStatus::MethodNotAllowed);
-                case http::RouteStatus::NotFound:
-                    return http::make_error_response(http::HttpStatus::NotFound);
-            }
-            return http::make_error_response(http::HttpStatus::NotFound);
-        });
-    if (!root_added) {
+    const std::string& root_default_path = config.root_default_path;
+    if (!router->has_route_exact(http::HttpMethod::Get, root_default_path)) {
         common::Logger::instance()
             .error("register default route failed")
             .field("method", http::to_string(http::HttpMethod::Get))
             .field("path", "/")
+            .field("target_path", root_default_path)
+            .field("error", "source_get_route_not_found")
             .field("decision", "exit_process");
-        return nullptr;
+        return false;
     }
 
-    return router;
+    const bool root_added = router->add_route(http::HttpMethod::Get, "/", root_default_path);
+    if (!root_added && !router->has_route_exact(http::HttpMethod::Get, "/")) {
+        common::Logger::instance()
+            .error("register default route failed")
+            .field("method", http::to_string(http::HttpMethod::Get))
+            .field("path", "/")
+            .field("target_path", root_default_path)
+            .field("error", "register_route_failed")
+            .field("decision", "exit_process");
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
 
 ServerApp::ServerApp(std::span<char*> args) : startup_(args) {}
+
+std::shared_ptr<http::Router> ServerApp::get_router() const {
+    if (!startup_.ok) {
+        return nullptr;
+    }
+
+    std::lock_guard lock(router_mutex_);
+    if (router_ == nullptr) {
+        router_ = build_default_router(startup_.config);
+    }
+    return router_;
+}
+
+bool ServerApp::add_route(http::HttpMethod method, const std::string& path, http::Router::Handler handler) noexcept {
+    return execute_route_operation("add route failed", "add_route_failed", method, path, nullptr, [&]() {
+        const std::shared_ptr<http::Router> router = get_router();
+        if (router == nullptr) {
+            return false;
+        }
+        return router->add_route(method, path, std::move(handler));
+    });
+}
+
+bool ServerApp::add_route(http::HttpMethod method, const std::string& path, const std::string& source_path) noexcept {
+    return execute_route_operation("add route failed", "add_route_failed", method, path, &source_path, [&]() {
+        const std::shared_ptr<http::Router> router = get_router();
+        if (router == nullptr) {
+            return false;
+        }
+        return router->add_route(method, path, source_path);
+    });
+}
+
+bool ServerApp::mod_route(http::HttpMethod method, const std::string& path, http::Router::Handler handler) noexcept {
+    return execute_route_operation("mod route failed", "mod_route_failed", method, path, nullptr, [&]() {
+        const std::shared_ptr<http::Router> router = get_router();
+        if (router == nullptr) {
+            return false;
+        }
+        return router->mod_route(method, path, std::move(handler));
+    });
+}
+
+bool ServerApp::mod_route(http::HttpMethod method, const std::string& path, const std::string& source_path) noexcept {
+    return execute_route_operation("mod route failed", "mod_route_failed", method, path, &source_path, [&]() {
+        const std::shared_ptr<http::Router> router = get_router();
+        if (router == nullptr) {
+            return false;
+        }
+        return router->mod_route(method, path, source_path);
+    });
+}
+
+bool ServerApp::del_route(http::HttpMethod method, const std::string& path) noexcept {
+    return execute_route_operation("del route failed", "del_route_failed", method, path, nullptr, [&]() {
+        const std::shared_ptr<http::Router> router = get_router();
+        if (router == nullptr) {
+            return false;
+        }
+        return router->del_route(method, path);
+    });
+}
+
+bool ServerApp::has_route_match(http::HttpMethod method, const std::string& path) const noexcept {
+    return execute_route_operation("has route match failed", "has_route_match_failed", method, path, nullptr, [&]() {
+        const std::shared_ptr<http::Router> router = get_router();
+        if (router == nullptr) {
+            return false;
+        }
+        return router->has_route_match(method, path);
+    });
+}
+
+bool ServerApp::has_route_exact(http::HttpMethod method, const std::string& path) const noexcept {
+    return execute_route_operation("has route exact failed", "has_route_exact_failed", method, path, nullptr, [&]() {
+        const std::shared_ptr<http::Router> router = get_router();
+        if (router == nullptr) {
+            return false;
+        }
+        return router->has_route_exact(method, path);
+    });
+}
 
 int ServerApp::run() const {
     if (!startup_.ok) {
@@ -141,8 +230,11 @@ int ServerApp::run() const {
             .field("path", startup_.config_path.string());
     }
 
-    const std::shared_ptr<http::Router> router = build_default_router(startup_.config);
+    const std::shared_ptr<http::Router> router = get_router();
     if (router == nullptr) {
+        return 1;
+    }
+    if (!register_root_default_route(startup_.config, router)) {
         return 1;
     }
 

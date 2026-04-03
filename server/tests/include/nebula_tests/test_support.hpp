@@ -11,6 +11,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -118,6 +119,37 @@ inline std::string read_all(const std::filesystem::path& file_path) {
     expect_true(stream.is_open(), "failed to open file");
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
+
+inline void write_file(const std::filesystem::path& path, std::string_view content) {
+    std::ofstream stream(path);
+    expect_true(stream.is_open(), "config file should open for write");
+    stream << content;
+    stream.flush();
+    expect_true(stream.good(), "config file should flush successfully");
+}
+
+class ArgvBuilder {
+public:
+    explicit ArgvBuilder(std::vector<std::string> args) : storage_(std::move(args)) {
+        rebuild();
+    }
+
+    [[nodiscard]] std::span<char*> span() {
+        return {argv_.data(), argv_.size()};
+    }
+
+private:
+    void rebuild() {
+        argv_.clear();
+        argv_.reserve(storage_.size());
+        for (std::string& item : storage_) {
+            argv_.push_back(item.data());
+        }
+    }
+
+    std::vector<std::string> storage_;
+    std::vector<char*> argv_;
+};
 
 template <typename Fn>
 inline std::string capture_stderr(Fn&& fn, std::string_view prefix = "nebula-stderr-capture") {

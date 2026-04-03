@@ -1,6 +1,5 @@
 #include "nebula/server/server_config.hpp"
 
-#include <fstream>
 #include <string>
 #include <vector>
 
@@ -15,14 +14,7 @@ using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
 using nebula::testsupport::TempDir;
-
-void write_file(const std::filesystem::path& path, const std::string& content) {
-    std::ofstream stream(path);
-    expect_true(stream.is_open(), "config file should open for write");
-    stream << content;
-    stream.flush();
-    expect_true(stream.good(), "config file should flush successfully");
-}
+using nebula::testsupport::write_file;
 
 void test_load_full_valid_config() {
     const TempDir dir("nebula-server-config-valid");
