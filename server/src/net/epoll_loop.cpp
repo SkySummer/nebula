@@ -16,7 +16,7 @@ bool ctl(int epoll_fd, int op, int fd, std::uint32_t events) {
 
 }  // namespace
 
-EpollLoop::~EpollLoop() {
+EpollLoop::~EpollLoop() noexcept {
     close();
 }
 
@@ -42,7 +42,7 @@ bool EpollLoop::open() {
     return fd_ >= 0;
 }
 
-void EpollLoop::close() {
+void EpollLoop::close() noexcept {
     if (fd_ >= 0) {
         ::close(fd_);
         fd_ = -1;

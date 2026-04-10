@@ -1,7 +1,6 @@
 #include "nebula/server/http_sub_reactor.hpp"
 
 #include <cerrno>
-#include <cstdio>
 #include <exception>
 #include <string>
 #include <utility>
@@ -15,33 +14,6 @@
 #include "nebula/server/reactor_constants.hpp"
 
 namespace nebula::server {
-
-namespace {
-
-void report_destructor_cleanup_error(const char* action, const char* error) noexcept {
-    std::fputs("sub reactor destructor cleanup failed: action=", stderr);
-    std::fputs(action != nullptr ? action : "unknown", stderr);
-    std::fputs(", error=", stderr);
-    std::fputs(error != nullptr ? error : "unknown", stderr);
-    std::fputs(", decision=ignore", stderr);
-    std::fputc('\n', stderr);
-}
-
-void report_log_emit_error(std::size_t reactor_id, const char* event) noexcept {
-    std::fputs("sub reactor log emit failed: reactor_id=", stderr);
-    try {
-        const std::string reactor_id_text = std::to_string(reactor_id);
-        std::fputs(reactor_id_text.c_str(), stderr);
-    } catch (...) {
-        std::fputs("unknown", stderr);
-    }
-    std::fputs(", event=", stderr);
-    std::fputs(event != nullptr ? event : "unknown", stderr);
-    std::fputs(", error=logger_emit_failed, decision=ignore", stderr);
-    std::fputc('\n', stderr);
-}
-
-}  // namespace
 
 HttpSubReactor::HttpSubReactor(std::size_t id, const ServerConfig& config, RequestDispatchFn dispatch_request,
                                LifecycleProviderFn lifecycle_provider, ForceCloseProviderFn force_close_provider,
@@ -58,9 +30,17 @@ HttpSubReactor::~HttpSubReactor() noexcept {
     try {
         shutdown();
     } catch (const std::exception& e) {
-        report_destructor_cleanup_error("shutdown", e.what());
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "sub reactor destructor cleanup failed")
+            .field("reactor_id", id_)
+            .field("error", e.what())
+            .field("decision", "ignore");
     } catch (...) {
-        report_destructor_cleanup_error("shutdown", "unknown");
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "sub reactor destructor cleanup failed")
+            .field("reactor_id", id_)
+            .field("error", "unknown")
+            .field("decision", "ignore");
     }
 }
 
@@ -72,7 +52,7 @@ bool HttpSubReactor::start() {
         const int err = errno;
         run_state_.store(RunState::Drained);
         common::Logger::instance()
-            .error("sub reactor open epoll failed")
+            .error(common::LogDomain::Server, "sub reactor open epoll failed")
             .field("reactor_id", id_)
             .field("errno", err, common::errno_message(err));
         return false;
@@ -84,7 +64,7 @@ bool HttpSubReactor::start() {
         epoll_.close();
         run_state_.store(RunState::Drained);
         common::Logger::instance()
-            .error("sub reactor create wakeup fd failed")
+            .error(common::LogDomain::Server, "sub reactor create wakeup fd failed")
             .field("reactor_id", id_)
             .field("errno", err, common::errno_message(err));
         return false;
@@ -96,7 +76,7 @@ bool HttpSubReactor::start() {
         epoll_.close();
         run_state_.store(RunState::Drained);
         common::Logger::instance()
-            .error("sub reactor epoll add wakeup failed")
+            .error(common::LogDomain::Server, "sub reactor epoll add wakeup failed")
             .field("reactor_id", id_)
             .field("fd", wakeup_fd)
             .field("errno", err, common::errno_message(err));
@@ -121,7 +101,7 @@ bool HttpSubReactor::start() {
         }
         epoll_.close();
         common::Logger::instance()
-            .error("sub reactor start thread failed")
+            .error(common::LogDomain::Server, "sub reactor start thread failed")
             .field("reactor_id", id_)
             .field("error", e.what());
         return false;
@@ -134,7 +114,7 @@ bool HttpSubReactor::start() {
         }
         epoll_.close();
         common::Logger::instance()
-            .error("sub reactor start thread failed")
+            .error(common::LogDomain::Server, "sub reactor start thread failed")
             .field("reactor_id", id_)
             .field("error", "unknown");
         return false;
@@ -233,7 +213,7 @@ void HttpSubReactor::notify_wakeup() {
     const int err = net::notify_eventfd(wakeup_fd_);
     if (err != 0) {
         common::Logger::instance()
-            .warn("sub reactor notify wakeup failed")
+            .warn(common::LogDomain::Server, "sub reactor notify wakeup failed")
             .field("fd", wakeup_fd_)
             .field("reactor_id", id_)
             .field("errno", err, common::errno_message(err))
@@ -305,7 +285,7 @@ bool HttpSubReactor::wait_and_process_events() {
         }
         const int err = errno;
         common::Logger::instance()
-            .error("sub reactor wait failed")
+            .error(common::LogDomain::Server, "sub reactor wait failed")
             .field("reactor_id", id_)
             .field("fd", epoll_.fd())
             .field("errno", err, common::errno_message(err))
@@ -323,7 +303,7 @@ void HttpSubReactor::run_loop() {
     try {
         bool shutdown_started = false;
 
-        common::Logger::instance().debug("sub reactor started").field("reactor_id", id_);
+        common::Logger::instance().debug(common::LogDomain::Server, "sub reactor started").field("reactor_id", id_);
 
         while (run_state_.load() == RunState::Running) {
             const LifecycleState state = current_lifecycle_state();
@@ -357,7 +337,7 @@ void HttpSubReactor::run_loop() {
         run_state_.store(RunState::ThreadExited);
 
         common::Logger::instance()
-            .debug("sub reactor stopped")
+            .debug(common::LogDomain::Server, "sub reactor stopped")
             .field("reactor_id", id_)
             .field("count", connections_.size());
     } catch (const std::exception& e) {
@@ -370,15 +350,11 @@ void HttpSubReactor::run_loop() {
 void HttpSubReactor::handle_run_loop_exception(const char* error) noexcept {
     run_state_.store(RunState::ThreadExited);
 
-    try {
-        common::Logger::instance()
-            .error("sub reactor event loop exception")
-            .field("reactor_id", id_)
-            .field("error", error != nullptr ? error : "unknown")
-            .field("decision", "stop_loop");
-    } catch (...) {
-        report_log_emit_error(id_, "sub_reactor_event_loop_exception");
-    }
+    common::Logger::instance()
+        .error(common::LogDomain::Server, "sub reactor event loop exception")
+        .field("reactor_id", id_)
+        .field("error", error != nullptr ? error : "unknown")
+        .field("decision", "stop_loop");
 
     notify_fatal_error_safely();
 }
@@ -390,26 +366,18 @@ void HttpSubReactor::notify_fatal_error_safely() noexcept {
 
     try {
         fatal_error_callback_(id_);
-    } catch (const std::exception& callback_error) {
-        try {
-            common::Logger::instance()
-                .error("sub reactor fatal callback failed")
-                .field("reactor_id", id_)
-                .field("error", callback_error.what())
-                .field("decision", "ignore");
-        } catch (...) {
-            report_log_emit_error(id_, "sub_reactor_fatal_callback_failed");
-        }
+    } catch (const std::exception& e) {
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "sub reactor fatal callback failed")
+            .field("reactor_id", id_)
+            .field("error", e.what())
+            .field("decision", "ignore");
     } catch (...) {
-        try {
-            common::Logger::instance()
-                .error("sub reactor fatal callback failed")
-                .field("reactor_id", id_)
-                .field("error", "unknown")
-                .field("decision", "ignore");
-        } catch (...) {
-            report_log_emit_error(id_, "sub_reactor_fatal_callback_failed");
-        }
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "sub reactor fatal callback failed")
+            .field("reactor_id", id_)
+            .field("error", "unknown")
+            .field("decision", "ignore");
     }
 }
 

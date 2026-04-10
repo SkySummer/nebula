@@ -30,7 +30,7 @@ std::string format_peer(const sockaddr_in& addr) {
 
 }  // namespace
 
-Listener::~Listener() {
+Listener::~Listener() noexcept {
     close();
 }
 
@@ -92,7 +92,7 @@ bool Listener::open(std::uint16_t port, int backlog) {
     return true;
 }
 
-void Listener::close() {
+void Listener::close() noexcept {
     if (fd_ >= 0) {
         ::close(fd_);
         fd_ = -1;

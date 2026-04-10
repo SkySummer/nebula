@@ -3,7 +3,6 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <exception>
 #include <memory>
 #include <string>
@@ -33,13 +32,13 @@ void log_access_addresses(std::uint16_t listening_port) {
     for (const net::AccessAddress& address : access_addresses.addresses) {
         if (address.is_network) {
             common::Logger::instance()
-                .info("server access network")
+                .info(common::LogDomain::Server, "server access network")
                 .field("url", address.url)
                 .field("port", listening_port)
                 .field("interface", address.interface_name);
         } else {
             common::Logger::instance()
-                .info("server access local")
+                .info(common::LogDomain::Server, "server access local")
                 .field("url", address.url)
                 .field("port", listening_port);
         }
@@ -47,37 +46,17 @@ void log_access_addresses(std::uint16_t listening_port) {
     if (access_addresses.interface_error != 0) {
         const int err = access_addresses.interface_error;
         common::Logger::instance()
-            .warn("list network interfaces failed")
+            .warn(common::LogDomain::Server, "list network interfaces failed")
             .field("errno", err, common::errno_message(err))
             .field("fallback", "localhost_and_loopback_only");
     }
 }
 
-void report_destructor_cleanup_error(const char* action, const char* error) noexcept {
-    std::fputs("server runtime destructor cleanup failed: action=", stderr);
-    std::fputs(action != nullptr ? action : "unknown", stderr);
-    std::fputs(", error=", stderr);
-    std::fputs(error != nullptr ? error : "unknown", stderr);
-    std::fputs(", decision=ignore", stderr);
-    std::fputc('\n', stderr);
-}
-
-void report_log_emit_error(const char* event) noexcept {
-    std::fputs("server runtime log emit failed: event=", stderr);
-    std::fputs(event != nullptr ? event : "unknown", stderr);
-    std::fputs(", error=logger_emit_failed, decision=ignore", stderr);
-    std::fputc('\n', stderr);
-}
-
 void log_runtime_exception(const char* event, LifecycleState state, const char* error) noexcept {
-    try {
-        common::Logger::instance()
-            .error(event != nullptr ? event : "runtime exception")
-            .field("state", to_string(state))
-            .field("error", error != nullptr ? error : "unknown");
-    } catch (...) {
-        report_log_emit_error(event);
-    }
+    common::Logger::instance()
+        .error(common::LogDomain::Server, event != nullptr ? event : "runtime exception")
+        .field("state", to_string(state))
+        .field("error", error != nullptr ? error : "unknown");
 }
 
 }  // namespace
@@ -102,19 +81,21 @@ HttpServerRuntime::HttpServerRuntime(ServerConfig config, std::shared_ptr<http::
 }
 
 HttpServerRuntime::~HttpServerRuntime() noexcept {
-    auto run_cleanup = [](const char* action, const auto& cleanup) noexcept {
-        try {
-            cleanup();
-        } catch (const std::exception& e) {
-            report_destructor_cleanup_error(action, e.what());
-        } catch (...) {
-            report_destructor_cleanup_error(action, "unknown");
-        }
-    };
-
-    run_cleanup("request_stop", [this]() { request_stop(); });
-    run_cleanup("thread_pool_stop", [this]() { thread_pool_.stop(); });
-    run_cleanup("shutdown_runtime", [this]() { shutdown_runtime(); });
+    try {
+        request_stop();
+        thread_pool_.stop();
+        shutdown_runtime();
+    } catch (const std::exception& e) {
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "server runtime destructor cleanup failed")
+            .field("error", e.what())
+            .field("decision", "ignore");
+    } catch (...) {
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "server runtime destructor cleanup failed")
+            .field("error", "unknown")
+            .field("decision", "ignore");
+    }
 }
 
 RunResult HttpServerRuntime::run() noexcept {
@@ -148,7 +129,9 @@ RunResult HttpServerRuntime::run() noexcept {
 
     try {
         if (!lifecycle_controller_.try_enter_starting(expected_state)) {
-            common::Logger::instance().warn("runtime start rejected").field("state", to_string(expected_state));
+            common::Logger::instance()
+                .warn(common::LogDomain::Server, "runtime start rejected")
+                .field("state", to_string(expected_state));
             return RunResult::StartRejected;
         }
 
@@ -159,7 +142,7 @@ RunResult HttpServerRuntime::run() noexcept {
         if (lifecycle_controller_.consume_start_cancel_request()) {
             cleanup_start_context();
             common::Logger::instance()
-                .info("runtime start canceled")
+                .info(common::LogDomain::Server, "runtime start canceled")
                 .field("reason", "stop_before_runtime_init")
                 .field("state", to_string(LifecycleState::Starting))
                 .field("next_state", to_string(LifecycleState::Idle));
@@ -181,7 +164,7 @@ RunResult HttpServerRuntime::run() noexcept {
         if (!lifecycle_controller_.try_enter_running(expected_state)) {
             cleanup_start_context();
             common::Logger::instance()
-                .info("runtime start canceled")
+                .info(common::LogDomain::Server, "runtime start canceled")
                 .field("reason", "stop_during_runtime_init")
                 .field("state", to_string(expected_state))
                 .field("next_state", to_string(LifecycleState::Idle));
@@ -190,7 +173,7 @@ RunResult HttpServerRuntime::run() noexcept {
 
         const std::uint16_t active_port = listening_port_.load();
         common::Logger::instance()
-            .info("runtime started")
+            .info(common::LogDomain::Server, "runtime started")
             .field("port", active_port)
             .field("backlog", config_.backlog)
             .field("max_connections", config_.max_connections)
@@ -204,15 +187,21 @@ RunResult HttpServerRuntime::run() noexcept {
         const bool shutdown_ok = cleanup_start_context();
 
         if (event_loop_result == RunResult::FatalError) {
-            common::Logger::instance().error("runtime stopped unexpectedly").field("error", "event_loop_fatal_error");
+            common::Logger::instance()
+                .error(common::LogDomain::Server, "runtime stopped unexpectedly")
+                .field("error", "event_loop_fatal_error");
             return RunResult::FatalError;
         }
         if (!shutdown_ok) {
-            common::Logger::instance().error("runtime cleanup failed").field("error", "shutdown_runtime_exception");
+            common::Logger::instance()
+                .error(common::LogDomain::Server, "runtime cleanup failed")
+                .field("error", "shutdown_runtime_exception");
             return RunResult::CleanupFailed;
         }
 
-        common::Logger::instance().info("runtime stopped").field("result", to_string(event_loop_result));
+        common::Logger::instance()
+            .info(common::LogDomain::Server, "runtime stopped")
+            .field("result", to_string(event_loop_result));
         return event_loop_result;
     } catch (const std::exception& e) {
         cleanup_start_context();
@@ -230,12 +219,14 @@ void HttpServerRuntime::request_stop() noexcept {
         const StopRequestTransition transition = lifecycle_controller_.request_stop();
         if (transition.decision != StopRequestDecision::Ignored) {
             common::Logger::instance()
-                .info("runtime stop requested")
+                .info(common::LogDomain::Server, "runtime stop requested")
                 .field("decision", to_string(transition.decision))
                 .field("state", to_string(transition.state))
                 .field("next_state", to_string(transition.next_state));
         } else {
-            common::Logger::instance().debug("runtime stop ignored").field("state", to_string(transition.state));
+            common::Logger::instance()
+                .debug(common::LogDomain::Server, "runtime stop ignored")
+                .field("state", to_string(transition.state));
         }
 
         notify_main_wakeup();
@@ -260,7 +251,9 @@ bool HttpServerRuntime::init_runtime() {
     sub_reactor_fatal_error_.store(false);
 
     if (main_reactor_ == nullptr) {
-        common::Logger::instance().error("runtime init failed").field("error", "main_reactor_missing");
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "runtime init failed")
+            .field("error", "main_reactor_missing");
         return false;
     }
 
@@ -270,7 +263,9 @@ bool HttpServerRuntime::init_runtime() {
 
     if (sub_reactor_pool_ == nullptr) {
         main_reactor_->close();
-        common::Logger::instance().error("runtime init failed").field("error", "sub_reactor_pool_missing");
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "runtime init failed")
+            .field("error", "sub_reactor_pool_missing");
         return false;
     }
 
@@ -322,7 +317,9 @@ RunResult HttpServerRuntime::run_event_loop() {
         }
 
         if (main_reactor_ == nullptr) {
-            common::Logger::instance().error("main reactor unavailable").field("error", "main_reactor_missing");
+            common::Logger::instance()
+                .error(common::LogDomain::Server, "main reactor unavailable")
+                .field("error", "main_reactor_missing");
             disable_response_submission();
             return RunResult::FatalError;
         }
@@ -335,7 +332,7 @@ RunResult HttpServerRuntime::run_event_loop() {
 
         if (sub_reactor_fatal_error_.load()) {
             common::Logger::instance()
-                .error("sub reactor failed")
+                .error(common::LogDomain::Server, "sub reactor failed")
                 .field("error", "sub_reactor_event_loop_fatal")
                 .field("decision", "stop_loop");
             disable_response_submission();
@@ -383,7 +380,7 @@ void HttpServerRuntime::enter_shutdown_draining(ShutdownMachine& shutdown) {
     [[maybe_unused]] const bool ignored = collect_drain_status(connection_count, pending_count);
 
     common::Logger::instance()
-        .info("graceful shutdown started")
+        .info(common::LogDomain::Server, "graceful shutdown started")
         .field("timeout_ms", config_.graceful_shutdown_timeout.count())
         .field("count", connection_count)
         .field("pending_count", pending_count)
@@ -401,7 +398,7 @@ bool HttpServerRuntime::advance_shutdown_machine(ShutdownMachine& shutdown) {
     std::size_t pending_count = 0;
     if (collect_drain_status(connection_count, pending_count)) {
         common::Logger::instance()
-            .info("graceful shutdown completed")
+            .info(common::LogDomain::Server, "graceful shutdown completed")
             .field("count", connection_count)
             .field("pending_count", pending_count)
             .field("decision", "stop_loop");
@@ -415,7 +412,7 @@ bool HttpServerRuntime::advance_shutdown_machine(ShutdownMachine& shutdown) {
     }
 
     common::Logger::instance()
-        .warn("graceful shutdown timeout")
+        .warn(common::LogDomain::Server, "graceful shutdown timeout")
         .field("timeout_ms", config_.graceful_shutdown_timeout.count())
         .field("count", connection_count)
         .field("pending_count", pending_count)
@@ -454,7 +451,9 @@ bool HttpServerRuntime::collect_drain_status(std::size_t& connection_count, std:
 void HttpServerRuntime::accept_new_connections() {
     while (lifecycle_controller_.state() == LifecycleState::Running) {
         if (main_reactor_ == nullptr) {
-            common::Logger::instance().error("accept failed").field("error", "main_reactor_missing");
+            common::Logger::instance()
+                .error(common::LogDomain::Server, "accept failed")
+                .field("error", "main_reactor_missing");
             return;
         }
 
@@ -466,7 +465,7 @@ void HttpServerRuntime::accept_new_connections() {
             if (!common::is_would_block(errno)) {
                 const int err = errno;
                 common::Logger::instance()
-                    .warn("accept failed")
+                    .warn(common::LogDomain::Server, "accept failed")
                     .field("fd", main_reactor_->listener_fd())
                     .field("errno", err, common::errno_message(err))
                     .field("decision", "keep_running");
@@ -480,7 +479,7 @@ void HttpServerRuntime::accept_new_connections() {
         }
         if (tracked_connections >= config_.max_connections) {
             common::Logger::instance()
-                .warn("too many connections")
+                .warn(common::LogDomain::Server, "too many connections")
                 .field("count", tracked_connections)
                 .field("max_connections", config_.max_connections)
                 .field("peer", accepted.peer)
@@ -494,7 +493,7 @@ void HttpServerRuntime::accept_new_connections() {
             sub_reactor_pool_->dispatch_connection(accepted, connection_token);
         } else {
             common::Logger::instance()
-                .error("dispatch connection failed")
+                .error(common::LogDomain::Server, "dispatch connection failed")
                 .field("fd", accepted.fd)
                 .field("peer", accepted.peer)
                 .field("error", "sub_reactor_pool_missing")
@@ -507,7 +506,7 @@ void HttpServerRuntime::accept_new_connections() {
 void HttpServerRuntime::dispatch_sub_request(ReactorRequestTask task) {
     if (request_dispatcher_ == nullptr) {
         common::Logger::instance()
-            .error("dispatch request failed")
+            .error(common::LogDomain::Server, "dispatch request failed")
             .field("fd", task.fd)
             .field("reactor_id", task.reactor_id)
             .field("connection_token", task.connection_token)
@@ -523,7 +522,7 @@ void HttpServerRuntime::submit_response(ReactorResponseTask task) {
     const LifecycleState state = lifecycle_controller_.state();
     if (!can_submit_response_for_state(state)) {
         common::Logger::instance()
-            .debug("response dropped")
+            .debug(common::LogDomain::Server, "response dropped")
             .field("fd", task.fd)
             .field("reactor_id", task.reactor_id)
             .field("connection_token", task.connection_token)
@@ -533,7 +532,7 @@ void HttpServerRuntime::submit_response(ReactorResponseTask task) {
 
     if (sub_reactor_pool_ == nullptr) {
         common::Logger::instance()
-            .debug("response dropped")
+            .debug(common::LogDomain::Server, "response dropped")
             .field("fd", task.fd)
             .field("reactor_id", task.reactor_id)
             .field("connection_token", task.connection_token)
@@ -544,7 +543,7 @@ void HttpServerRuntime::submit_response(ReactorResponseTask task) {
     const LifecycleState state_after_check = lifecycle_controller_.state();
     if (!can_submit_response_for_state(state_after_check)) {
         common::Logger::instance()
-            .debug("response dropped")
+            .debug(common::LogDomain::Server, "response dropped")
             .field("fd", task.fd)
             .field("reactor_id", task.reactor_id)
             .field("connection_token", task.connection_token)
@@ -581,7 +580,7 @@ bool HttpServerRuntime::can_submit_response_for_state(LifecycleState state) cons
 void HttpServerRuntime::on_sub_reactor_fatal(std::size_t reactor_id) {
     sub_reactor_fatal_error_.store(true);
     common::Logger::instance()
-        .error("sub reactor fatal")
+        .error(common::LogDomain::Server, "sub reactor fatal")
         .field("reactor_id", reactor_id)
         .field("error", "event_loop_fatal")
         .field("decision", "stop_main_loop");

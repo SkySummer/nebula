@@ -23,7 +23,7 @@ std::vector<std::string> split_http_path_segments(std::string_view path) {
     return segments;
 }
 
-std::string_view to_string(HttpMethod method) {
+std::string_view to_string(HttpMethod method) noexcept {
     switch (method) {
         case HttpMethod::Get:
             return "GET";
@@ -79,7 +79,7 @@ int to_status_code(HttpStatus status) {
     return static_cast<int>(status);
 }
 
-std::string_view to_string(HttpStatus status) {
+std::string_view to_string(HttpStatus status) noexcept {
     switch (status) {
         case HttpStatus::Continue:
             return "Continue";

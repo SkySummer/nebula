@@ -127,7 +127,7 @@ void HttpSubReactor::handle_client_event(int fd, std::uint32_t events) {
     const auto it = connections_.find(fd);
     if (it == connections_.end()) {
         common::Logger::instance()
-            .debug("sub reactor unknown connection event")
+            .debug(common::LogDomain::Server, "sub reactor unknown connection event")
             .field("fd", fd)
             .field("reactor_id", id_)
             .field("events", events);
@@ -208,7 +208,7 @@ bool HttpSubReactor::append_read_data(Connection& connection, const char* data, 
 void HttpSubReactor::handle_pending_bytes_exceeded(Connection& connection, std::size_t pending_limit) {
     const bool can_enqueue_error_response = !connection.processing && connection.write_buffer.empty();
     common::Logger::instance()
-        .warn("sub reactor pending request bytes exceeded")
+        .warn(common::LogDomain::Server, "sub reactor pending request bytes exceeded")
         .field("fd", connection.fd)
         .field("reactor_id", id_)
         .field("pending_bytes", connection.read_buffer.size())
@@ -254,7 +254,7 @@ bool HttpSubReactor::handle_recv_error(Connection& connection, int err, bool& sh
     }
 
     common::Logger::instance()
-        .warn("sub reactor read failed")
+        .warn(common::LogDomain::Server, "sub reactor read failed")
         .field("fd", connection.fd)
         .field("reactor_id", id_)
         .field("errno", err, common::errno_message(err))
@@ -283,7 +283,7 @@ void HttpSubReactor::handle_writable(Connection& connection) {
 
         const int err = errno;
         common::Logger::instance()
-            .warn("sub reactor write failed")
+            .warn(common::LogDomain::Server, "sub reactor write failed")
             .field("fd", connection.fd)
             .field("reactor_id", id_)
             .field("errno", err, common::errno_message(err))
@@ -305,7 +305,7 @@ void HttpSubReactor::handle_writable(Connection& connection) {
     if (!epoll_.mod(connection.fd, kConnectionReadEvents)) {
         const int err = errno;
         common::Logger::instance()
-            .warn("sub reactor epoll mod read failed")
+            .warn(common::LogDomain::Server, "sub reactor epoll mod read failed")
             .field("fd", connection.fd)
             .field("reactor_id", id_)
             .field("errno", err, common::errno_message(err))
@@ -350,7 +350,7 @@ void HttpSubReactor::schedule_request(Connection& connection, http::HttpRequest 
         });
     } catch (const std::exception& e) {
         common::Logger::instance()
-            .error("sub reactor thread pool submit failed")
+            .error(common::LogDomain::Server, "sub reactor thread pool submit failed")
             .field("fd", fd)
             .field("reactor_id", id_)
             .field("connection_token", connection_token)
@@ -360,9 +360,9 @@ void HttpSubReactor::schedule_request(Connection& connection, http::HttpRequest 
         try {
             enqueue_error_response(fd, connection_token, http::HttpStatus::InternalServerError, {}, true, suppress_body,
                                    request_line, request_bytes, request_started_at);
-        } catch (const std::exception& enqueue_error) {
+        } catch (const std::exception& e) {
             close_with_response_enqueue_error("sub reactor enqueue error response failed", fd, connection_token,
-                                              enqueue_error.what(), "response_enqueue_failed");
+                                              e.what(), "response_enqueue_failed");
         } catch (...) {
             close_with_response_enqueue_error("sub reactor enqueue error response failed", fd, connection_token,
                                               "unknown", "response_enqueue_failed");
@@ -447,7 +447,7 @@ void HttpSubReactor::enqueue_error_response(int fd, std::uint64_t token, http::H
 void HttpSubReactor::close_with_response_enqueue_error(const char* event, int fd, std::uint64_t token,
                                                        const char* error, std::string_view close_reason) {
     common::Logger::instance()
-        .error(event != nullptr ? event : "sub reactor enqueue response failed")
+        .error(common::LogDomain::Server, event != nullptr ? event : "sub reactor enqueue response failed")
         .field("fd", fd)
         .field("reactor_id", id_)
         .field("connection_token", token)
@@ -467,7 +467,7 @@ void HttpSubReactor::apply_response_to_connection(Connection& connection, const 
     const std::string quoted_request = quote_request_line_for_log(request_line);
 
     common::Logger::instance()
-        .info("request completed")
+        .info(common::LogDomain::Server, "request completed")
         .field("fd", connection.fd)
         .field("peer", connection.peer)
         .field("reactor_id", id_)
@@ -483,7 +483,7 @@ void HttpSubReactor::apply_response_to_connection(Connection& connection, const 
     if (!epoll_.mod(connection.fd, kConnectionReadWriteEvents)) {
         const int err = errno;
         common::Logger::instance()
-            .warn("sub reactor epoll mod write failed")
+            .warn(common::LogDomain::Server, "sub reactor epoll mod write failed")
             .field("fd", connection.fd)
             .field("reactor_id", id_)
             .field("errno", err, common::errno_message(err))
@@ -496,7 +496,7 @@ void HttpSubReactor::drain_wakeup(int wakeup_fd) {
     const int err = net::drain_eventfd(wakeup_fd);
     if (err != 0) {
         common::Logger::instance()
-            .warn("sub reactor drain wakeup failed")
+            .warn(common::LogDomain::Server, "sub reactor drain wakeup failed")
             .field("fd", wakeup_fd)
             .field("errno", err, common::errno_message(err))
             .field("decision", "keep_running");

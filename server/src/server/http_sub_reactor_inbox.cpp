@@ -59,7 +59,7 @@ void HttpSubReactor::drain_pending_accepts() {
         if (!epoll_.add(pending.fd, kConnectionReadEvents)) {
             const int err = errno;
             common::Logger::instance()
-                .error("sub reactor epoll add connection failed")
+                .error(common::LogDomain::Server, "sub reactor epoll add connection failed")
                 .field("fd", pending.fd)
                 .field("reactor_id", id_)
                 .field("errno", err, common::errno_message(err))
@@ -78,7 +78,7 @@ void HttpSubReactor::drain_pending_accepts() {
         connection_count_.fetch_add(1);
 
         common::Logger::instance()
-            .debug("sub reactor connection accepted")
+            .debug(common::LogDomain::Server, "sub reactor connection accepted")
             .field("fd", pending.fd)
             .field("peer", peer)
             .field("reactor_id", id_);
@@ -104,7 +104,7 @@ void HttpSubReactor::drain_pending_responses() {
         }
         if (it->second.token != item.connection_token) {
             common::Logger::instance()
-                .debug("sub reactor stale pending response ignored")
+                .debug(common::LogDomain::Server, "sub reactor stale pending response ignored")
                 .field("fd", item.fd)
                 .field("reactor_id", id_)
                 .field("pending_connection_token", item.connection_token)

@@ -215,7 +215,7 @@ bool add_route_with_handler_locked(Router::RouteNode& root,
             };
         } else if (current->dynamic_child->param_name != segment.value) {
             common::Logger::instance()
-                .warn("add route rejected")
+                .warn(common::LogDomain::Http, "add route rejected")
                 .field("method", to_string(method))
                 .field("path", path)
                 .field("error", "ambiguous_dynamic_segment");
@@ -227,7 +227,7 @@ bool add_route_with_handler_locked(Router::RouteNode& root,
     const auto [handler_it, inserted] = current->handlers.emplace(method, std::move(handler));
     if (!inserted) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "duplicate_route");
@@ -236,7 +236,10 @@ bool add_route_with_handler_locked(Router::RouteNode& root,
 
     exact_route_index[path][method] = true;
 
-    common::Logger::instance().info("route added").field("method", to_string(method)).field("path", path);
+    common::Logger::instance()
+        .info(common::LogDomain::Http, "route added")
+        .field("method", to_string(method))
+        .field("path", path);
     return true;
 }
 
@@ -247,7 +250,7 @@ bool mod_route_with_handler_locked(Router::RouteNode& root,
     const auto exact_path_it = exact_route_index.find(path);
     if (exact_path_it == exact_route_index.end()) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "path_not_found");
@@ -256,7 +259,7 @@ bool mod_route_with_handler_locked(Router::RouteNode& root,
 
     if (!exact_path_it->second.contains(method)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "method_not_found");
@@ -266,7 +269,7 @@ bool mod_route_with_handler_locked(Router::RouteNode& root,
     Router::RouteNode* route_node = find_exact_route_node(root, segments);
     if (route_node == nullptr) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "path_not_found");
@@ -276,7 +279,7 @@ bool mod_route_with_handler_locked(Router::RouteNode& root,
     auto method_it = route_node->handlers.find(method);
     if (method_it == route_node->handlers.end()) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "method_not_found");
@@ -284,7 +287,10 @@ bool mod_route_with_handler_locked(Router::RouteNode& root,
     }
 
     method_it->second = std::move(handler);
-    common::Logger::instance().info("route modified").field("method", to_string(method)).field("path", path);
+    common::Logger::instance()
+        .info(common::LogDomain::Http, "route modified")
+        .field("method", to_string(method))
+        .field("path", path);
     return true;
 }
 
@@ -293,7 +299,7 @@ bool mod_route_with_handler_locked(Router::RouteNode& root,
 bool Router::add_route(HttpMethod method, const std::string& path, Handler handler) {
     if (path.empty()) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "empty_path");
@@ -301,7 +307,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, Handler handl
     }
     if (!handler) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "empty_handler");
@@ -311,7 +317,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, Handler handl
     std::vector<RouteSegment> segments;
     if (!parse_route_segments(path, segments)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "invalid_dynamic_segment");
@@ -319,7 +325,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, Handler handl
     }
     if (has_duplicate_dynamic_param_keys(segments)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "duplicate_dynamic_param");
@@ -334,7 +340,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, Handler handl
 bool Router::add_route(HttpMethod method, const std::string& path, const std::string& source_path) {
     if (path.empty()) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "empty_path");
@@ -342,7 +348,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     }
     if (source_path.empty()) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -353,7 +359,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     std::vector<RouteSegment> segments;
     if (!parse_route_segments(path, segments)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "invalid_dynamic_segment");
@@ -361,7 +367,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     }
     if (has_duplicate_dynamic_param_keys(segments)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "duplicate_dynamic_param");
@@ -371,7 +377,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     std::vector<RouteSegment> source_segments;
     if (!parse_route_segments(source_path, source_segments)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -380,7 +386,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     }
     if (has_duplicate_dynamic_param_keys(source_segments)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -389,7 +395,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     }
     if (!has_same_dynamic_param_keys(segments, source_segments)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -401,7 +407,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     const auto source_path_it = exact_route_index_.find(source_path);
     if (source_path_it == exact_route_index_.end()) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -411,7 +417,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
 
     if (!source_path_it->second.contains(method)) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -422,7 +428,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     const RouteNode* source_node = find_exact_route_node(root_, source_segments);
     if (source_node == nullptr) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -433,7 +439,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
     const auto source_method_it = source_node->handlers.find(method);
     if (source_method_it == source_node->handlers.end() || source_method_it->second == nullptr) {
         common::Logger::instance()
-            .warn("add route rejected")
+            .warn(common::LogDomain::Http, "add route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -447,7 +453,7 @@ bool Router::add_route(HttpMethod method, const std::string& path, const std::st
 bool Router::mod_route(HttpMethod method, const std::string& path, Handler handler) {
     if (path.empty()) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "empty_path");
@@ -455,7 +461,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, Handler handl
     }
     if (!handler) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "empty_handler");
@@ -465,7 +471,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, Handler handl
     std::vector<RouteSegment> segments;
     if (!parse_route_segments(path, segments)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "invalid_dynamic_segment");
@@ -473,7 +479,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, Handler handl
     }
     if (has_duplicate_dynamic_param_keys(segments)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "duplicate_dynamic_param");
@@ -488,7 +494,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, Handler handl
 bool Router::mod_route(HttpMethod method, const std::string& path, const std::string& source_path) {
     if (path.empty()) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "empty_path");
@@ -496,7 +502,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     }
     if (source_path.empty()) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -507,7 +513,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     std::vector<RouteSegment> segments;
     if (!parse_route_segments(path, segments)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "invalid_dynamic_segment");
@@ -515,7 +521,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     }
     if (has_duplicate_dynamic_param_keys(segments)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "duplicate_dynamic_param");
@@ -525,7 +531,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     std::vector<RouteSegment> source_segments;
     if (!parse_route_segments(source_path, source_segments)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -534,7 +540,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     }
     if (has_duplicate_dynamic_param_keys(source_segments)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -543,7 +549,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     }
     if (!has_same_dynamic_param_keys(segments, source_segments)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -555,7 +561,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     const auto source_path_it = exact_route_index_.find(source_path);
     if (source_path_it == exact_route_index_.end()) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -565,7 +571,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
 
     if (!source_path_it->second.contains(method)) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -576,7 +582,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     const RouteNode* source_node = find_exact_route_node(root_, source_segments);
     if (source_node == nullptr) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -587,7 +593,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
     const auto source_method_it = source_node->handlers.find(method);
     if (source_method_it == source_node->handlers.end() || source_method_it->second == nullptr) {
         common::Logger::instance()
-            .warn("mod route rejected")
+            .warn(common::LogDomain::Http, "mod route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("source_path", source_path)
@@ -601,7 +607,7 @@ bool Router::mod_route(HttpMethod method, const std::string& path, const std::st
 bool Router::del_route(HttpMethod method, const std::string& path) {
     if (path.empty()) {
         common::Logger::instance()
-            .warn("del route rejected")
+            .warn(common::LogDomain::Http, "del route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "empty_path");
@@ -611,7 +617,7 @@ bool Router::del_route(HttpMethod method, const std::string& path) {
     std::vector<RouteSegment> segments;
     if (!parse_route_segments(path, segments)) {
         common::Logger::instance()
-            .warn("del route rejected")
+            .warn(common::LogDomain::Http, "del route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "invalid_dynamic_segment");
@@ -622,7 +628,7 @@ bool Router::del_route(HttpMethod method, const std::string& path) {
     const auto exact_path_it = exact_route_index_.find(path);
     if (exact_path_it == exact_route_index_.end()) {
         common::Logger::instance()
-            .warn("del route rejected")
+            .warn(common::LogDomain::Http, "del route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "path_not_found");
@@ -631,7 +637,7 @@ bool Router::del_route(HttpMethod method, const std::string& path) {
 
     if (!exact_path_it->second.contains(method)) {
         common::Logger::instance()
-            .warn("del route rejected")
+            .warn(common::LogDomain::Http, "del route rejected")
             .field("method", to_string(method))
             .field("path", path)
             .field("error", "method_not_found");
@@ -645,7 +651,10 @@ bool Router::del_route(HttpMethod method, const std::string& path) {
         exact_route_index_.erase(exact_path_it);
     }
 
-    common::Logger::instance().info("route deleted").field("method", to_string(method)).field("path", path);
+    common::Logger::instance()
+        .info(common::LogDomain::Http, "route deleted")
+        .field("method", to_string(method))
+        .field("path", path);
     return true;
 }
 

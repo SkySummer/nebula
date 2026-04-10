@@ -2,8 +2,8 @@
 #define NEBULA_COMMON_POSIX_UTILS_HPP
 
 #include <cerrno>
-#include <cstring>
 #include <string>
+#include <system_error>
 
 #include <unistd.h>
 
@@ -20,11 +20,10 @@ inline void close_fd(int fd) noexcept {
 }
 
 inline std::string errno_message(int err) {
-    const char* text = std::strerror(err);
-    if (text == nullptr) {
+    if (err == 0) {
         return "unknown";
     }
-    return text;
+    return std::system_category().message(err);
 }
 
 }  // namespace nebula::common

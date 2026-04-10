@@ -72,6 +72,30 @@ HttpResponse make_error_response(HttpStatus status, std::string body) {
     return make_plain_text_response(status, std::move(body));
 }
 
+HttpResponse make_json_response(HttpStatus status, const common::JsonValue& body) {
+    HttpResponse response;
+    response.status = status;
+    response.headers.emplace("Content-Type", "application/json; charset=utf-8");
+    response.body = common::dump_json(body);
+    return response;
+}
+
+HttpResponse make_api_success_response(common::JsonValue data) {
+    common::JsonObject body;
+    body.emplace("code", common::JsonValue("ok"));
+    body.emplace("message", common::JsonValue("success"));
+    body.emplace("data", std::move(data));
+    return make_json_response(HttpStatus::OK, common::JsonValue(std::move(body)));
+}
+
+HttpResponse make_api_error_response(HttpStatus status, std::string_view code, std::string_view message) {
+    common::JsonObject body;
+    body.emplace("code", common::JsonValue(code));
+    body.emplace("message", common::JsonValue(message));
+    body.emplace("data", common::JsonValue(nullptr));
+    return make_json_response(status, common::JsonValue(std::move(body)));
+}
+
 std::string serialize_http_response(const HttpResponse& response, bool keep_alive, bool suppress_body) {
     const bool suppress_body_for_status = status_disallows_body(response.status);
     const bool omit_body = suppress_body || suppress_body_for_status;

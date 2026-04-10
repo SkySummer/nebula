@@ -25,7 +25,7 @@ public:
     HttpSubReactorPool(const ServerConfig& config, RequestDispatchFn dispatch_request,
                        LifecycleProviderFn lifecycle_provider, ForceCloseProviderFn force_close_provider,
                        FatalErrorFn fatal_error_callback);
-    ~HttpSubReactorPool();
+    ~HttpSubReactorPool() noexcept;
 
     HttpSubReactorPool(const HttpSubReactorPool&) = delete;
     HttpSubReactorPool& operator=(const HttpSubReactorPool&) = delete;

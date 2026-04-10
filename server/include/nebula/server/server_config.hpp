@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "nebula/auth/password_hash_limits.hpp"
 #include "nebula/common/logger.hpp"
 
 namespace nebula::server {
@@ -38,6 +39,19 @@ struct ServerConfig {
     bool enable_echo = true;
     bool enable_root_default = true;
     std::string root_default_path = "/healthz";
+
+    std::filesystem::path auth_jwt_secret_path = "runtime/secrets/jwt.key";
+    std::int64_t auth_access_token_ttl_s = 3600;
+    std::uint32_t auth_password_hash_iterations = auth::kDefaultPasswordHashIterations;
+
+    std::string database_host = "127.0.0.1";
+    std::uint16_t database_port = 5432;
+    std::string database_name = "nebula";
+    std::string database_user = "nebula";
+    std::string database_password_env = "NEBULA_DATABASE_PASSWORD";
+    std::size_t database_max_connections = 8;
+    std::int64_t database_connect_timeout_ms = 3000;
+    std::int64_t database_acquire_timeout_ms = 3000;
 };
 
 void normalize_server_thread_counts(ServerConfig& config);
@@ -47,7 +61,7 @@ enum class ServerConfigSource : std::uint8_t {
     File,
 };
 
-[[nodiscard]] std::string_view to_string(ServerConfigSource source);
+[[nodiscard]] std::string_view to_string(ServerConfigSource source) noexcept;
 
 struct ServerConfigLoadResult {
     bool ok = true;

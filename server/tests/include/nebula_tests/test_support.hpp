@@ -23,6 +23,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "nebula/common/base64.hpp"
+
 namespace nebula::testsupport {
 
 [[noreturn]] inline void fail(std::string_view message) {
@@ -71,7 +73,7 @@ public:
     explicit TempDir(std::string_view prefix) {
         static std::atomic<uint64_t> counter = 0;
         const uint64_t id = counter.fetch_add(1);
-        path_ = std::filesystem::temp_directory_path() / std::format("{}-{}-{}", prefix, getpid(), id);
+        path_ = std::filesystem::temp_directory_path() / std::format("{}-{}-{}", prefix, ::getpid(), id);
 
         std::error_code ec;
         std::filesystem::remove_all(path_, ec);
@@ -86,7 +88,7 @@ public:
     TempDir(TempDir&&) = default;
     TempDir& operator=(TempDir&&) = default;
 
-    ~TempDir() {
+    ~TempDir() noexcept {
         std::error_code ec;
         std::filesystem::remove_all(path_, ec);
     }
@@ -128,6 +130,25 @@ inline void write_file(const std::filesystem::path& path, std::string_view conte
     expect_true(stream.good(), "config file should flush successfully");
 }
 
+inline void set_owner_read_write_only(const std::filesystem::path& path) {
+    std::error_code permissions_error;
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, permissions_error);
+    expect_true(!permissions_error, "file permissions should be set to owner_read_write");
+}
+
+inline void set_owner_read_only(const std::filesystem::path& path) {
+    std::error_code permissions_error;
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read, std::filesystem::perm_options::replace,
+                                 permissions_error);
+    expect_true(!permissions_error, "file permissions should be set to owner_read");
+}
+
+inline void write_jwt_secret_file(const std::filesystem::path& path, std::string_view secret) {
+    write_file(path, nebula::common::base64_encode(secret));
+    set_owner_read_write_only(path);
+}
+
 class ArgvBuilder {
 public:
     explicit ArgvBuilder(std::vector<std::string> args) : storage_(std::move(args)) {
@@ -156,7 +177,7 @@ inline std::string capture_stderr(Fn&& fn, std::string_view prefix = "nebula-std
     static std::atomic<uint64_t> counter = 0;
     const uint64_t id = counter.fetch_add(1);
     const std::filesystem::path capture_path =
-        std::filesystem::temp_directory_path() / std::format("{}-{}-{}.log", prefix, getpid(), id);
+        std::filesystem::temp_directory_path() / std::format("{}-{}-{}.log", prefix, ::getpid(), id);
 
     const int capture_fd = ::creat(capture_path.c_str(), 0600);
     if (capture_fd < 0) {
@@ -213,12 +234,10 @@ template <typename Fn>
 inline int run_main(Fn&& fn) noexcept {
     try {
         return std::invoke(std::forward<Fn>(fn));
-    } catch (const std::exception& ex) {
-        std::fputs("unhandled exception in main: error=", stderr);
-        std::fputs(ex.what(), stderr);
-        std::fputc('\n', stderr);
+    } catch (const std::exception& e) {
+        std::cerr << "unhandled exception in main: error=" << e.what() << '\n';
     } catch (...) {
-        std::fputs("unhandled exception in main: error=unknown\n", stderr);
+        std::cerr << "unhandled exception in main: error=unknown\n";
     }
     return 1;
 }

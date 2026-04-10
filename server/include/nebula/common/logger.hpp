@@ -3,6 +3,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -22,9 +23,21 @@ enum class LogLevel : std::uint8_t {
     Info,
     Warning,
     Error,
+    Fatal,
 };
 
-[[nodiscard]] std::string_view to_string(LogLevel level);
+[[nodiscard]] std::string_view to_string(LogLevel level) noexcept;
+
+enum class LogDomain : std::uint8_t {
+    Auth,
+    Common,
+    Http,
+    Server,
+    User,
+    Test,
+};
+
+[[nodiscard]] std::string_view to_string(LogDomain domain) noexcept;
 
 struct Field {
     Field(std::string key_in, std::string value_in, std::string message_in = {})
@@ -56,24 +69,33 @@ class Logger {
 public:
     class Entry {
     public:
+        Entry() noexcept = default;
         Entry(Logger& logger, LogLevel level, std::string_view event);
         Entry(const Entry&) = delete;
         Entry& operator=(const Entry&) = delete;
         Entry(Entry&& other) noexcept;
         Entry& operator=(Entry&& other) = delete;
-        ~Entry();
+        ~Entry() noexcept;
 
-        Entry& field(Field field_value);
+        Entry& field(Field field_value) noexcept;
 
         template <typename T>
-        Entry& field(std::string key, T&& value, std::string_view message = {}) {
-            fields_.emplace_back(std::move(key), std::forward<T>(value), message);
+        Entry& field(std::string key, T&& value, std::string_view message = {}) noexcept {
+            try {
+                fields_.emplace_back(std::move(key), std::forward<T>(value), message);
+            } catch (const std::exception& error) {
+                report_field_append_error(error.what());
+            } catch (...) {
+                report_field_append_error("unknown");
+            }
             return *this;
         }
 
-        void emit();
+        void emit() noexcept;
 
     private:
+        static void report_field_append_error(const char* error) noexcept;
+
         Logger* logger_ = nullptr;
         LogLevel level_ = LogLevel::Info;
         std::string event_;
@@ -83,21 +105,29 @@ public:
 
     static Logger& instance();
 
-    void init(LogLevel default_level = LogLevel::Info, std::filesystem::path log_dir = "runtime/logs",
-              bool also_stderr = true);
-    void set_level(LogLevel level);
-    [[nodiscard]] LogLevel level() const;
+    void initialize(LogLevel default_level = LogLevel::Info, std::filesystem::path log_dir = "runtime/logs",
+                    bool also_stderr = true) noexcept;
+    void set_level(LogLevel level) noexcept;
+    [[nodiscard]] LogLevel level() const noexcept;
 
-    Entry trace(std::string_view event);
-    Entry debug(std::string_view event);
-    Entry info(std::string_view event);
-    Entry warn(std::string_view event);
-    Entry error(std::string_view event);
+    Entry trace(LogDomain domain, std::string_view event) noexcept;
+    Entry debug(LogDomain domain, std::string_view event) noexcept;
+    Entry info(LogDomain domain, std::string_view event) noexcept;
+    Entry warn(LogDomain domain, std::string_view event) noexcept;
+    Entry error(LogDomain domain, std::string_view event) noexcept;
+    Entry fatal(LogDomain domain, std::string_view event) noexcept;
 
 private:
     Logger() = default;
 
-    void log(LogLevel level, std::string_view event, std::span<const Field> fields);
+    Entry trace(std::string_view event) noexcept;
+    Entry debug(std::string_view event) noexcept;
+    Entry info(std::string_view event) noexcept;
+    Entry warn(std::string_view event) noexcept;
+    Entry error(std::string_view event) noexcept;
+    Entry fatal(std::string_view event) noexcept;
+
+    void log(LogLevel level, std::string_view event, std::span<const Field> fields) noexcept;
     void ensure_initialized_locked();
     void rotate_file_if_needed_locked(std::string_view date, std::string_view timestamp);
     void write_line_locked(std::string_view line);

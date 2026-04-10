@@ -11,6 +11,7 @@
 
 #include <arpa/inet.h>
 
+#include "nebula/common/string_utils.hpp"
 #include "nebula/http/http_types.hpp"
 
 namespace nebula::http {
@@ -21,20 +22,6 @@ std::string to_lower(std::string_view text) {
     std::string out(text);
     std::ranges::transform(out, out.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return out;
-}
-
-std::string_view trim_ascii(std::string_view text) {
-    std::size_t begin = 0;
-    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
-        ++begin;
-    }
-
-    std::size_t end = text.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
-        --end;
-    }
-
-    return text.substr(begin, end - begin);
 }
 
 bool is_all_digits(std::string_view text) {
@@ -203,7 +190,7 @@ std::optional<std::array<unsigned char, 16>> parse_ipv6_address(std::string_view
 
     std::array<unsigned char, 16> bytes{};
     const std::string ipv6_text(text);
-    if (inet_pton(AF_INET6, ipv6_text.c_str(), bytes.data()) != 1) {
+    if (::inet_pton(AF_INET6, ipv6_text.c_str(), bytes.data()) != 1) {
         return std::nullopt;
     }
     return bytes;
@@ -487,7 +474,7 @@ VersionCheck check_http_version(std::string_view version_text) {
 }
 
 std::optional<std::size_t> parse_content_length(std::string_view text) {
-    std::string_view trimmed = trim_ascii(text);
+    std::string_view trimmed = common::trim_ascii(text);
     if (trimmed.empty()) {
         return std::nullopt;
     }
@@ -621,7 +608,7 @@ ParseResult parse_headers(std::string_view header_block, std::size_t request_lin
         }
 
         const std::string_view raw_key = line.substr(0, colon);
-        const std::string_view raw_value = trim_ascii(line.substr(colon + 1U));
+        const std::string_view raw_value = common::trim_ascii(line.substr(colon + 1U));
         if (!is_valid_token(raw_key)) {
             return parse_error(HttpStatus::BadRequest, "Invalid Header Key");
         }
@@ -660,7 +647,7 @@ ParseResult parse_transfer_encoding_value(std::string_view value, bool& chunked_
         const std::size_t comma = value.find(',', cursor);
         const std::string_view part =
             comma == std::string_view::npos ? value.substr(cursor) : value.substr(cursor, comma - cursor);
-        const std::string_view token = trim_ascii(part);
+        const std::string_view token = common::trim_ascii(part);
         if (token.empty() || !is_valid_token(token)) {
             return parse_error(HttpStatus::BadRequest, "Invalid Transfer-Encoding");
         }
@@ -717,7 +704,7 @@ ParseResult parse_chunk_trailer_line(std::string_view line) {
     }
 
     const std::string_view key = line.substr(0, colon);
-    const std::string_view value = trim_ascii(line.substr(colon + 1U));
+    const std::string_view value = common::trim_ascii(line.substr(colon + 1U));
     if (!is_valid_token(key) || !is_valid_header_value(value)) {
         return parse_error(HttpStatus::BadRequest, "Invalid Chunk Trailer");
     }
@@ -870,7 +857,7 @@ ParseResult validate_host_header(const HttpRequest& request, std::string_view ve
         return parse_error(HttpStatus::BadRequest, "Missing Host Header");
     }
 
-    const std::string_view host_value = trim_ascii(host_it->second);
+    const std::string_view host_value = common::trim_ascii(host_it->second);
     if (!is_valid_host_field_value(host_value)) {
         return parse_error(HttpStatus::BadRequest, "Invalid Host Header");
     }
@@ -902,7 +889,7 @@ ConnectionOptions parse_connection_option(std::string_view value) {
         const std::size_t comma = value.find(',', cursor);
         const std::string_view part =
             comma == std::string_view::npos ? value.substr(cursor) : value.substr(cursor, comma - cursor);
-        const std::string_view token = trim_ascii(part);
+        const std::string_view token = common::trim_ascii(part);
         if (!token.empty()) {
             if (!options.has_close && equals_ignore_case_ascii(token, "close")) {
                 options.has_close = true;

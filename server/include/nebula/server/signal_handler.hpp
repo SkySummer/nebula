@@ -12,7 +12,7 @@ namespace nebula::server {
 class SignalHandler {
 public:
     SignalHandler();
-    ~SignalHandler();
+    ~SignalHandler() noexcept;
 
     SignalHandler(const SignalHandler&) = delete;
     SignalHandler& operator=(const SignalHandler&) = delete;

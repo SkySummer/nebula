@@ -55,7 +55,7 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
             });
         } catch (const std::exception& e) {
             common::Logger::instance()
-                .error("request handler exception")
+                .error(common::LogDomain::Server, "request handler exception")
                 .field("fd", task.fd)
                 .field("reactor_id", task.reactor_id)
                 .field("connection_token", task.connection_token)
@@ -65,7 +65,7 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
                 submit_error_response(std::move(task));
             } catch (const std::exception& submit_error) {
                 common::Logger::instance()
-                    .error("submit error response failed")
+                    .error(common::LogDomain::Server, "submit error response failed")
                     .field("fd", task.fd)
                     .field("reactor_id", task.reactor_id)
                     .field("connection_token", task.connection_token)
@@ -73,7 +73,7 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
                     .field("next_state", "closing");
             } catch (...) {
                 common::Logger::instance()
-                    .error("submit error response failed")
+                    .error(common::LogDomain::Server, "submit error response failed")
                     .field("fd", task.fd)
                     .field("reactor_id", task.reactor_id)
                     .field("connection_token", task.connection_token)
@@ -82,7 +82,7 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
             }
         } catch (...) {
             common::Logger::instance()
-                .error("request handler exception")
+                .error(common::LogDomain::Server, "request handler exception")
                 .field("fd", task.fd)
                 .field("reactor_id", task.reactor_id)
                 .field("connection_token", task.connection_token)
@@ -92,7 +92,7 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
                 submit_error_response(std::move(task));
             } catch (...) {
                 common::Logger::instance()
-                    .error("submit error response failed")
+                    .error(common::LogDomain::Server, "submit error response failed")
                     .field("fd", task.fd)
                     .field("reactor_id", task.reactor_id)
                     .field("connection_token", task.connection_token)

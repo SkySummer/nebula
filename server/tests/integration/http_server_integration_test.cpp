@@ -4,8 +4,9 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
-#include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <memory>
 #include <optional>
@@ -14,7 +15,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -24,9 +24,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "nebula/auth/auth_http.hpp"
 #include "nebula/common/logger.hpp"
 #include "nebula/http/router.hpp"
 #include "nebula_tests/test_support.hpp"
+#include "nebula_tests/test_support_integration.hpp"
 
 namespace {
 
@@ -34,7 +36,16 @@ using nebula::testsupport::capture_stderr;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_not_contains;
 using nebula::testsupport::expect_true;
+using nebula::testsupport::write_jwt_secret_file;
+using nebula::testsupport::integration::build_runtime;
+using nebula::testsupport::integration::connect_localhost;
+using nebula::testsupport::integration::read_until_close;
+using nebula::testsupport::integration::send_all;
+using nebula::testsupport::integration::wait_until_server_ready;
 using RunResult = nebula::server::RunResult;
+using ServerThreadGuard = nebula::testsupport::integration::ServerThreadGuard;
+
+constexpr std::string_view kIntegrationJwtSecret = "integration_auth_secret_0123456789abcdef";
 
 std::shared_ptr<nebula::http::Router> build_default_router(
     std::optional<std::string> root_default_path = std::string("/healthz")) {
@@ -73,55 +84,9 @@ std::shared_ptr<nebula::http::Router> build_default_router(
     return router;
 }
 
-bool is_nonfatal_run_result(RunResult result) {
+bool is_nonfatal_run_result(const RunResult result) {
     return result == RunResult::StartCanceled || result == RunResult::GracefulCompleted ||
            result == RunResult::ForcedByTimeout;
-}
-
-nebula::server::HttpServerRuntime build_runtime(nebula::server::ServerConfig config,
-                                                std::shared_ptr<nebula::http::Router> router) {
-    return nebula::server::HttpServerBuilder().with_config(std::move(config)).with_router(std::move(router)).build();
-}
-
-sockaddr* as_sockaddr(sockaddr_in& addr) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    return reinterpret_cast<sockaddr*>(&addr);
-}
-
-bool send_all(int fd, std::string_view data) {
-    std::size_t offset = 0;
-    while (offset < data.size()) {
-        const ssize_t sent_n = ::send(fd, data.data() + offset, data.size() - offset, 0);
-        if (sent_n > 0) {
-            offset += static_cast<std::size_t>(sent_n);
-            continue;
-        }
-
-        if (sent_n < 0 && errno == EINTR) {
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
-int connect_localhost(std::uint16_t port) {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return -1;
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-    if (::connect(fd, as_sockaddr(addr), sizeof(addr)) != 0) {
-        ::close(fd);
-        return -1;
-    }
-
-    return fd;
 }
 
 void close_with_reset(int fd) {
@@ -197,25 +162,6 @@ std::string read_one_response(int fd, std::string& carry_buffer) {
     }
 }
 
-std::string read_until_close(int fd) {
-    std::string out;
-    std::vector<char> tmp(4096U);
-    while (true) {
-        const ssize_t read_n = ::recv(fd, tmp.data(), tmp.size(), 0);
-        if (read_n > 0) {
-            out.append(tmp.data(), static_cast<std::size_t>(read_n));
-            continue;
-        }
-        if (read_n == 0) {
-            return out;
-        }
-        if (errno == EINTR) {
-            continue;
-        }
-        return out;
-    }
-}
-
 int poll_socket_events(int fd, std::chrono::milliseconds timeout) {
     pollfd descriptor{};
     descriptor.fd = fd;
@@ -265,41 +211,6 @@ std::string encode_chunked_single_byte_chunks(std::string_view body) {
     return chunked;
 }
 
-void wait_until_server_ready(nebula::server::HttpServerRuntime& server) {
-    using namespace std::chrono_literals;
-
-    for (int idx = 0; idx < 200; ++idx) {
-        if (server.is_running() && server.listening_port() > 0) {
-            return;
-        }
-        std::this_thread::sleep_for(10ms);
-    }
-
-    nebula::testsupport::fail("server did not become ready in time");
-}
-
-class ServerThreadGuard {
-public:
-    ServerThreadGuard(nebula::server::HttpServerRuntime& server, std::thread& thread)
-        : server_(server), thread_(thread) {}
-
-    ServerThreadGuard(const ServerThreadGuard&) = delete;
-    ServerThreadGuard& operator=(const ServerThreadGuard&) = delete;
-    ServerThreadGuard(ServerThreadGuard&&) = delete;
-    ServerThreadGuard& operator=(ServerThreadGuard&&) = delete;
-
-    ~ServerThreadGuard() {
-        server_.request_stop();
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-    }
-
-private:
-    nebula::server::HttpServerRuntime& server_;
-    std::thread& thread_;
-};
-
 class SignalMaskGuard {
 public:
     SignalMaskGuard() : valid_(::pthread_sigmask(SIG_SETMASK, nullptr, &saved_mask_) == 0) {}
@@ -309,7 +220,7 @@ public:
     SignalMaskGuard(SignalMaskGuard&&) = delete;
     SignalMaskGuard& operator=(SignalMaskGuard&&) = delete;
 
-    ~SignalMaskGuard() {
+    ~SignalMaskGuard() noexcept {
         if (valid_) {
             ::pthread_sigmask(SIG_SETMASK, &saved_mask_, nullptr);
         }
@@ -349,7 +260,7 @@ public:
     SignalActionGuard(SignalActionGuard&&) = delete;
     SignalActionGuard& operator=(SignalActionGuard&&) = delete;
 
-    ~SignalActionGuard() {
+    ~SignalActionGuard() noexcept {
         if (has_saved_action_) {
             ::sigaction(signal_, &saved_action_, nullptr);
         }
@@ -671,12 +582,35 @@ void test_echo_endpoint() {
     expect_contains(response, body, "echo should return original body");
 }
 
+void test_auth_route_registration_fails_when_database_unreachable() {
+    const nebula::testsupport::TempDir secret_dir("nebula-http-auth-register-route-fail-secret");
+    const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
+    write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
+
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    config.auth_jwt_secret_path = secret_path;
+    config.database_host = "127.0.0.1";
+    config.database_port = 1;
+    config.database_name = "invalid_db";
+    config.database_user = "invalid_user";
+    ::setenv("NEBULA_TEST_INVALID_DATABASE_PASSWORD", "invalid_password", 1);
+    config.database_password_env = "NEBULA_TEST_INVALID_DATABASE_PASSWORD";
+    config.database_connect_timeout_ms = 500;
+
+    auto router = build_default_router();
+    expect_true(!nebula::auth::register_auth_routes(config, router),
+                "register auth routes should fail when database is unreachable");
+    ::unsetenv("NEBULA_TEST_INVALID_DATABASE_PASSWORD");
+}
+
 void test_request_completed_log_uses_raw_request_line() {
     const nebula::testsupport::TempDir log_dir("nebula-http-server-request-log");
     const std::string request = "GET http://localhost/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
 
     const std::string stderr_text = capture_stderr([&]() {
-        nebula::common::Logger::instance().init(nebula::common::LogLevel::Info, log_dir.path(), true);
+        nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Info, log_dir.path(), true);
 
         nebula::server::ServerConfig config;
         config.port = 0;
@@ -697,9 +631,10 @@ void test_request_completed_log_uses_raw_request_line() {
         expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
     });
 
-    nebula::common::Logger::instance().init(nebula::common::LogLevel::Warning, log_dir.path(), false);
+    nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Warning, log_dir.path(), false);
 
-    expect_contains(stderr_text, "[INFO] request completed: fd=", "request completed log should be emitted");
+    expect_contains(stderr_text,
+                    "[INFO] request completed: domain=server, fd=", "request completed log should be emitted");
     expect_contains(stderr_text, "request=\"GET http://localhost/healthz HTTP/1.1\"",
                     "request field should use raw request line");
     expect_contains(stderr_text, std::string("request_bytes=") + std::to_string(request.size()),
@@ -713,7 +648,7 @@ void test_connections_dispatched_to_multiple_sub_reactors() {
     const nebula::testsupport::TempDir log_dir("nebula-http-server-sub-reactor-dispatch");
 
     const std::string stderr_text = capture_stderr([&]() {
-        nebula::common::Logger::instance().init(nebula::common::LogLevel::Debug, log_dir.path(), true);
+        nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Debug, log_dir.path(), true);
 
         nebula::server::ServerConfig config;
         config.port = 0;
@@ -739,9 +674,10 @@ void test_connections_dispatched_to_multiple_sub_reactors() {
         }
     });
 
-    nebula::common::Logger::instance().init(nebula::common::LogLevel::Warning, log_dir.path(), false);
+    nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Warning, log_dir.path(), false);
 
-    expect_contains(stderr_text, "connection accepted: fd=", "connection accepted log should be emitted");
+    expect_contains(stderr_text,
+                    "connection accepted: domain=server, fd=", "connection accepted log should be emitted");
     expect_contains(stderr_text, "reactor_id=0", "dispatch should include reactor_id 0");
     expect_contains(stderr_text, "reactor_id=1", "dispatch should include reactor_id 1");
 }
@@ -2020,7 +1956,7 @@ void test_processing_state_pending_buffer_limit() {
 
 int run_http_server_integration_tests() {
     const nebula::testsupport::TempDir log_dir("nebula-http-server-integration-log");
-    nebula::common::Logger::instance().init(nebula::common::LogLevel::Warning, log_dir.path(), false);
+    nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Warning, log_dir.path(), false);
 
     const std::vector<nebula::testsupport::TestCase> tests = {
         {"signal mask restored after http server destroyed", test_signal_mask_restored_after_http_server_destroyed},
@@ -2033,6 +1969,8 @@ int run_http_server_integration_tests() {
         {"root endpoint not found when root mapping disabled", test_root_endpoint_not_found_when_root_mapping_disabled},
         {"head method suppresses body", test_head_method_suppresses_body},
         {"echo endpoint", test_echo_endpoint},
+        {"auth route registration fails when database unreachable",
+         test_auth_route_registration_fails_when_database_unreachable},
         {"request completed log uses raw request line", test_request_completed_log_uses_raw_request_line},
         {"connections dispatched to multiple sub reactors", test_connections_dispatched_to_multiple_sub_reactors},
         {"io threads zero uses default value in constructor",

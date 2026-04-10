@@ -1,6 +1,7 @@
 #ifndef NEBULA_SERVER_STARTUP_HPP
 #define NEBULA_SERVER_STARTUP_HPP
 
+#include <filesystem>
 #include <span>
 #include <string>
 

@@ -1,5 +1,7 @@
 #include "nebula/server/startup.hpp"
 
+#include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -44,7 +46,9 @@ void test_startup_loads_file_when_config_argument_present() {
                "[routes]\n"
                "root_default_path = \"/healthz\"\n");
 
+    ::setenv("NEBULA_DATABASE_PASSWORD", "startup_test_password", 1);
     const StartupResult startup = startup_with_args({"nebula", "--config", config_file.string()});
+    ::unsetenv("NEBULA_DATABASE_PASSWORD");
     expect_true(startup.ok, "explicit config startup should succeed");
     expect_equal(startup.config_source, ServerConfigSource::File, "explicit config startup should use file source");
     expect_equal(startup.config_path, config_file, "explicit config startup should preserve config path");

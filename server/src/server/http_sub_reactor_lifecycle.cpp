@@ -23,7 +23,7 @@ void HttpSubReactor::close_connection(int fd, std::string_view close_reason) {
     if (!epoll_.del(fd)) {
         const int err = errno;
         common::Logger::instance()
-            .warn("sub reactor epoll del connection failed")
+            .warn(common::LogDomain::Server, "sub reactor epoll del connection failed")
             .field("fd", fd)
             .field("reactor_id", id_)
             .field("errno", err, common::errno_message(err))
@@ -34,7 +34,7 @@ void HttpSubReactor::close_connection(int fd, std::string_view close_reason) {
     connection_count_.fetch_sub(1);
 
     common::Logger::instance()
-        .debug("sub reactor connection closed")
+        .debug(common::LogDomain::Server, "sub reactor connection closed")
         .field("fd", fd)
         .field("peer", connection.peer)
         .field("reactor_id", id_)
@@ -63,7 +63,7 @@ void HttpSubReactor::sweep_idle_connections() {
 
     for (const auto& [fd, peer] : idle_connections) {
         common::Logger::instance()
-            .info("sub reactor idle connection timeout")
+            .info(common::LogDomain::Server, "sub reactor idle connection timeout")
             .field("fd", fd)
             .field("peer", peer)
             .field("reactor_id", id_)

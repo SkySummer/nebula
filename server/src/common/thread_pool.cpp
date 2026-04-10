@@ -1,21 +1,8 @@
 #include "nebula/common/thread_pool.hpp"
 
-#include <cstdio>
-
 #include "nebula/common/logger.hpp"
 
 namespace nebula::common {
-
-namespace {
-
-void report_log_emit_error(const char* event) noexcept {
-    std::fputs("thread pool log emit failed: event=", stderr);
-    std::fputs(event != nullptr ? event : "unknown", stderr);
-    std::fputs(", error=logger_emit_failed, decision=ignore", stderr);
-    std::fputc('\n', stderr);
-}
-
-}  // namespace
 
 ThreadPool::ThreadPool(std::size_t worker_count) {
     if (worker_count == 0U) {
@@ -32,11 +19,7 @@ ThreadPool::ThreadPool(std::size_t worker_count) {
         throw;
     }
 
-    try {
-        Logger::instance().info("thread pool started").field("count", workers_.size());
-    } catch (...) {
-        report_log_emit_error("thread_pool_started");
-    }
+    Logger::instance().info(LogDomain::Common, "thread pool started").field("count", workers_.size());
 }
 
 ThreadPool::~ThreadPool() noexcept {
@@ -62,11 +45,7 @@ void ThreadPool::stop() noexcept {
     }
     workers_.clear();
 
-    try {
-        Logger::instance().info("thread pool stopped").field("count", worker_count);
-    } catch (...) {
-        report_log_emit_error("thread_pool_stopped");
-    }
+    Logger::instance().info(LogDomain::Common, "thread pool stopped").field("count", worker_count);
 }
 
 void ThreadPool::worker_loop() {

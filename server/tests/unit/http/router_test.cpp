@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "nebula/http/http_response_writer.hpp"

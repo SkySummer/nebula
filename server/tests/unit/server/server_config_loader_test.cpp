@@ -1,8 +1,12 @@
 #include "nebula/server/server_config.hpp"
 
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 
+#include "nebula/common/logger.hpp"
 #include "nebula_tests/test_support.hpp"
 
 namespace {
@@ -29,7 +33,7 @@ void test_load_full_valid_config() {
                "manage_signals = false\n"
                "\n"
                "[logger]\n"
-               "level = \"wArN\"\n"
+               "level = \"fAtAl\"\n"
                "dir = \"runtime/custom-logs\"\n"
                "also_stderr = false\n"
                "\n"
@@ -46,9 +50,26 @@ void test_load_full_valid_config() {
                "enable_healthz = false\n"
                "enable_echo = true\n"
                "enable_root_default = true\n"
-               "root_default_path = \"/healthz\"\n");
+               "root_default_path = \"/healthz\"\n"
+               "\n"
+               "[auth]\n"
+               "jwt_secret_path = \"runtime/secrets/test_jwt.key\"\n"
+               "access_token_ttl_s = 7200\n"
+               "password_hash_iterations = 240000\n"
+               "\n"
+               "[database]\n"
+               "host = \"db.local\"\n"
+               "port = 15432\n"
+               "name = \"nebula_test\"\n"
+               "user = \"nebula_user\"\n"
+               "password_env = \"NEBULA_TEST_DATABASE_PASSWORD_CFG\"\n"
+               "max_connections = 12\n"
+               "connect_timeout_ms = 2500\n"
+               "acquire_timeout_ms = 3500\n");
 
+    ::setenv("NEBULA_TEST_DATABASE_PASSWORD_CFG", "db_password", 1);
     const nebula::server::ServerConfigLoadResult loaded(file);
+    ::unsetenv("NEBULA_TEST_DATABASE_PASSWORD_CFG");
     expect_true(loaded.ok, "valid config should load");
     expect_equal(loaded.source, ServerConfigSource::File, "valid config should report file source");
 
@@ -59,7 +80,7 @@ void test_load_full_valid_config() {
     expect_equal(config.sub_reactor_count, static_cast<std::size_t>(3), "sub_reactor_count should map");
     expect_equal(config.worker_thread_count, static_cast<std::size_t>(6), "worker_thread_count should map");
     expect_true(!config.manage_signals, "manage_signals should map");
-    expect_equal(config.log_level, LogLevel::Warning, "log level should parse case-insensitive");
+    expect_equal(config.log_level, LogLevel::Fatal, "log level should parse case-insensitive");
     expect_equal(config.log_dir.string(), std::string("runtime/custom-logs"), "log_dir should map");
     expect_true(!config.log_also_stderr, "also_stderr should map");
     expect_equal(config.read_timeout.count(), static_cast<std::int64_t>(12345), "read timeout should map");
@@ -73,6 +94,22 @@ void test_load_full_valid_config() {
     expect_true(config.enable_echo, "enable_echo should map");
     expect_true(config.enable_root_default, "enable_root_default should map");
     expect_equal(config.root_default_path, std::string("/healthz"), "root_default_path should map");
+    expect_equal(config.auth_jwt_secret_path.string(), std::string("runtime/secrets/test_jwt.key"),
+                 "auth jwt secret path should map");
+    expect_equal(config.auth_access_token_ttl_s, static_cast<std::int64_t>(7200), "auth ttl should map");
+    expect_equal(config.auth_password_hash_iterations, static_cast<std::uint32_t>(240000),
+                 "auth hash iterations should map");
+    expect_equal(config.database_host, std::string("db.local"), "database host should map");
+    expect_equal(config.database_port, static_cast<std::uint16_t>(15432), "database port should map");
+    expect_equal(config.database_name, std::string("nebula_test"), "database name should map");
+    expect_equal(config.database_user, std::string("nebula_user"), "database user should map");
+    expect_equal(config.database_password_env, std::string("NEBULA_TEST_DATABASE_PASSWORD_CFG"),
+                 "database password env should map");
+    expect_equal(config.database_max_connections, static_cast<std::size_t>(12), "database max connections should map");
+    expect_equal(config.database_connect_timeout_ms, static_cast<std::int64_t>(2500),
+                 "database connect timeout should map");
+    expect_equal(config.database_acquire_timeout_ms, static_cast<std::int64_t>(3500),
+                 "database acquire timeout should map");
 }
 
 void test_worker_thread_count_zero_maps_to_default_auto_value() {
@@ -338,7 +375,296 @@ void test_missing_file_fails() {
     expect_equal(loaded.error, std::string("config_file_not_found"), "missing file should return fixed error");
 }
 
+void test_auth_jwt_secret_path_empty_rejected() {
+    const TempDir dir("nebula-server-config-auth-jwt-path-empty");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[auth]\n"
+               "jwt_secret_path = \"\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "empty auth.jwt_secret_path should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty auth.jwt_secret_path should report line");
+    expect_equal(loaded.error, std::string("invalid_value:auth.jwt_secret_path:empty_value"),
+                 "empty auth.jwt_secret_path should return fixed error");
+}
+
+void test_auth_access_token_ttl_zero_rejected() {
+    const TempDir dir("nebula-server-config-auth-token-ttl-zero");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[auth]\n"
+               "access_token_ttl_s = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "zero auth.access_token_ttl_s should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero auth.access_token_ttl_s should report line");
+    expect_equal(loaded.error, std::string("invalid_value:auth.access_token_ttl_s:must_be_positive"),
+                 "zero auth.access_token_ttl_s should return fixed error");
+}
+
+void test_auth_access_token_ttl_out_of_range_rejected() {
+    const TempDir dir("nebula-server-config-auth-token-ttl-range");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[auth]\n"
+               "access_token_ttl_s = 2147483648\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "too large auth.access_token_ttl_s should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5),
+                 "too large auth.access_token_ttl_s should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:auth.access_token_ttl_s"),
+                 "too large auth.access_token_ttl_s should return fixed error");
+}
+
+void test_auth_password_hash_iterations_type_mismatch_rejected() {
+    const TempDir dir("nebula-server-config-auth-iterations-type");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[auth]\n"
+               "password_hash_iterations = \"120000\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "auth.password_hash_iterations type mismatch should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5),
+                 "auth.password_hash_iterations type mismatch should report line");
+    expect_equal(loaded.error, std::string("type_mismatch:auth.password_hash_iterations"),
+                 "auth.password_hash_iterations type mismatch should return fixed error");
+}
+
+void test_auth_password_hash_iterations_below_minimum_rejected() {
+    const TempDir dir("nebula-server-config-auth-iterations-below-min");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[auth]\n"
+               "password_hash_iterations = 9999\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "below minimum auth.password_hash_iterations should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5),
+                 "below minimum auth.password_hash_iterations should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:auth.password_hash_iterations"),
+                 "below minimum auth.password_hash_iterations should return fixed error");
+}
+
+void test_auth_password_hash_iterations_out_of_range_rejected() {
+    const TempDir dir("nebula-server-config-auth-iterations-range");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[auth]\n"
+               "password_hash_iterations = 2147483648\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "too large auth.password_hash_iterations should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5),
+                 "too large auth.password_hash_iterations should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:auth.password_hash_iterations"),
+                 "too large auth.password_hash_iterations should return fixed error");
+}
+
+void test_database_host_empty_rejected() {
+    const TempDir dir("nebula-server-config-database-host-empty");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "host = \"\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "empty database.host should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty database.host should report line");
+    expect_equal(loaded.error, std::string("invalid_value:database.host:empty_value"),
+                 "empty database.host should return fixed error");
+}
+
+void test_database_port_zero_rejected() {
+    const TempDir dir("nebula-server-config-database-port-zero");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "port = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "zero database.port should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.port should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:database.port"),
+                 "zero database.port should return fixed error");
+}
+
+void test_database_name_empty_rejected() {
+    const TempDir dir("nebula-server-config-database-name-empty");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "name = \"\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "empty database.name should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty database.name should report line");
+    expect_equal(loaded.error, std::string("invalid_value:database.name:empty_value"),
+                 "empty database.name should return fixed error");
+}
+
+void test_database_user_empty_rejected() {
+    const TempDir dir("nebula-server-config-database-user-empty");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "user = \"\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "empty database.user should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty database.user should report line");
+    expect_equal(loaded.error, std::string("invalid_value:database.user:empty_value"),
+                 "empty database.user should return fixed error");
+}
+
+void test_database_max_connections_zero_rejected() {
+    const TempDir dir("nebula-server-config-database-pool-size-zero");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "max_connections = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "zero database.max_connections should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.max_connections should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:database.max_connections"),
+                 "zero database.max_connections should return fixed error");
+}
+
+void test_database_connect_timeout_zero_rejected() {
+    const TempDir dir("nebula-server-config-database-connect-timeout-zero");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "connect_timeout_ms = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "zero database.connect_timeout_ms should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.connect_timeout_ms should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:database.connect_timeout_ms"),
+                 "zero database.connect_timeout_ms should return fixed error");
+}
+
+void test_database_acquire_timeout_zero_rejected() {
+    const TempDir dir("nebula-server-config-database-acquire-timeout-zero");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "acquire_timeout_ms = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "zero database.acquire_timeout_ms should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.acquire_timeout_ms should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:database.acquire_timeout_ms"),
+                 "zero database.acquire_timeout_ms should return fixed error");
+}
+
+void test_database_legacy_pool_size_key_rejected() {
+    const TempDir dir("nebula-server-config-database-legacy-pool-size");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[database]\n"
+               "pool_size = 8\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "legacy database.pool_size should be rejected");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "legacy database.pool_size should report line");
+    expect_equal(loaded.error, std::string("unknown_key:database.pool_size"),
+                 "legacy database.pool_size should report unknown key");
+}
+
+void test_database_legacy_password_key_rejected() {
+    const TempDir dir("nebula-server-config-database-legacy-password");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[database]\n"
+               "password = \"nebula\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "legacy database.password should be rejected");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(2), "legacy database.password should report line");
+    expect_equal(loaded.error, std::string("unknown_key:database.password"),
+                 "legacy database.password should report unknown key");
+}
+
+void test_database_password_env_missing_rejected() {
+    const TempDir dir("nebula-server-config-database-password-missing");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "password_env = \"NEBULA_TEST_MISSING_PASSWORD\"\n");
+
+    ::unsetenv("NEBULA_TEST_MISSING_PASSWORD");
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "missing database.password_env should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5),
+                 "missing database.password_env should report source line");
+    expect_equal(loaded.error, std::string("invalid_value:database.password_env:env_not_set"),
+                 "missing database.password_env should return fixed error");
+}
+
+void test_database_password_env_present_loads_successfully() {
+    const TempDir dir("nebula-server-config-database-password-env");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[database]\n"
+               "password_env = \"NEBULA_TEST_PASSWORD_FROM_ENV\"\n");
+
+    ::setenv("NEBULA_TEST_PASSWORD_FROM_ENV", "from_env", 1);
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    ::unsetenv("NEBULA_TEST_PASSWORD_FROM_ENV");
+    expect_true(loaded.ok, "database.password_env should satisfy password requirement");
+}
+
 int run_server_config_loader_tests() {
+    ::setenv("NEBULA_DATABASE_PASSWORD", "unit_test_default_password", 1);
     const std::vector<nebula::testsupport::TestCase> tests = {
         {"load full valid config", test_load_full_valid_config},
         {"io threads zero maps to default auto value", test_sub_reactor_count_zero_maps_to_default_auto_value},
@@ -362,10 +688,32 @@ int run_server_config_loader_tests() {
          test_root_default_path_required_when_enable_root_default_default_true},
         {"root default path missing allowed when enable root default false",
          test_root_default_path_missing_allowed_when_enable_root_default_false},
+        {"auth jwt secret path empty rejected", test_auth_jwt_secret_path_empty_rejected},
+        {"auth access token ttl zero rejected", test_auth_access_token_ttl_zero_rejected},
+        {"auth access token ttl out of range rejected", test_auth_access_token_ttl_out_of_range_rejected},
+        {"auth password hash iterations type mismatch rejected",
+         test_auth_password_hash_iterations_type_mismatch_rejected},
+        {"auth password hash iterations below minimum rejected",
+         test_auth_password_hash_iterations_below_minimum_rejected},
+        {"auth password hash iterations out of range rejected",
+         test_auth_password_hash_iterations_out_of_range_rejected},
+        {"database host empty rejected", test_database_host_empty_rejected},
+        {"database port zero rejected", test_database_port_zero_rejected},
+        {"database name empty rejected", test_database_name_empty_rejected},
+        {"database user empty rejected", test_database_user_empty_rejected},
+        {"database max connections zero rejected", test_database_max_connections_zero_rejected},
+        {"database connect timeout zero rejected", test_database_connect_timeout_zero_rejected},
+        {"database acquire timeout zero rejected", test_database_acquire_timeout_zero_rejected},
+        {"database legacy pool size key rejected", test_database_legacy_pool_size_key_rejected},
+        {"database legacy password key rejected", test_database_legacy_password_key_rejected},
+        {"database password env missing rejected", test_database_password_env_missing_rejected},
+        {"database password env present loads successfully", test_database_password_env_present_loads_successfully},
         {"missing file fails", test_missing_file_fails},
     };
 
-    return nebula::testsupport::run_tests(tests);
+    const int test_exit = nebula::testsupport::run_tests(tests);
+    ::unsetenv("NEBULA_DATABASE_PASSWORD");
+    return test_exit;
 }
 
 }  // namespace

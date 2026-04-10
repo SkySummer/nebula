@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <iterator>
@@ -10,6 +11,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -19,6 +21,8 @@
 namespace nebula::server {
 
 namespace {
+
+constexpr std::int64_t kMaxAuthAccessTokenTtlSeconds = 86'400;
 
 using Table = std::unordered_map<std::string, config::TomlValue>;
 
@@ -41,6 +45,17 @@ const std::unordered_set<std::string> kKnownKeys = {
     "routes.enable_echo",
     "routes.enable_root_default",
     "routes.root_default_path",
+    "auth.jwt_secret_path",
+    "auth.access_token_ttl_s",
+    "auth.password_hash_iterations",
+    "database.host",
+    "database.port",
+    "database.name",
+    "database.user",
+    "database.password_env",
+    "database.max_connections",
+    "database.connect_timeout_ms",
+    "database.acquire_timeout_ms",
 };
 
 std::string to_lower(std::string_view text) {
@@ -89,12 +104,18 @@ bool parse_log_level(std::string_view text, common::LogLevel& level) {
         level = common::LogLevel::Error;
         return true;
     }
+    if (lowered == "fatal") {
+        level = common::LogLevel::Fatal;
+        return true;
+    }
     return false;
 }
 
 template <typename IntType>
-bool assign_non_negative_integer(const Table& table, std::string_view key, IntType& target,
-                                 ServerConfigLoadResult& result) {
+bool assign_integer_in_range(const Table& table, std::string_view key, IntType& target, IntType min_value,
+                             IntType max_value, ServerConfigLoadResult& result) {
+    static_assert(std::is_integral_v<IntType>);
+
     const config::TomlValue* raw = find_value(table, key);
     if (raw == nullptr) {
         return true;
@@ -106,18 +127,71 @@ bool assign_non_negative_integer(const Table& table, std::string_view key, IntTy
         return false;
     }
 
-    if (*value < 0) {
-        fail(result, std::format("negative_not_allowed:{}", key), raw->line);
+    if (min_value > max_value) {
+        fail(result, std::format("invalid_range:{}", key), raw->line);
         return false;
     }
 
-    if (static_cast<std::uint64_t>(*value) > static_cast<std::uint64_t>(std::numeric_limits<IntType>::max())) {
-        fail(result, std::format("value_out_of_range:{}", key), raw->line);
-        return false;
-    }
+    if constexpr (std::is_unsigned_v<IntType>) {
+        if (*value < 0) {
+            fail(result, std::format("negative_not_allowed:{}", key), raw->line);
+            return false;
+        }
 
-    target = static_cast<IntType>(*value);
-    return true;
+        const auto parsed = static_cast<std::uint64_t>(*value);
+        const auto min_u64 = static_cast<std::uint64_t>(min_value);
+        const auto max_u64 = static_cast<std::uint64_t>(max_value);
+        if (parsed < min_u64 || parsed > max_u64) {
+            fail(result, std::format("value_out_of_range:{}", key), raw->line);
+            return false;
+        }
+
+        target = static_cast<IntType>(parsed);
+        return true;
+    } else {
+        const auto min_i64 = static_cast<std::int64_t>(min_value);
+        const auto max_i64 = static_cast<std::int64_t>(max_value);
+        if (*value < min_i64 || *value > max_i64) {
+            fail(result, std::format("value_out_of_range:{}", key), raw->line);
+            return false;
+        }
+
+        target = static_cast<IntType>(*value);
+        return true;
+    }
+}
+
+template <typename IntType>
+constexpr IntType min_toml_integer_for_type() {
+    if constexpr (std::is_unsigned_v<IntType>) {
+        return static_cast<IntType>(0);
+    } else {
+        constexpr auto k_toml_int_min = static_cast<std::int64_t>(std::numeric_limits<std::int64_t>::min());
+        constexpr auto k_type_min = static_cast<std::int64_t>(std::numeric_limits<IntType>::min());
+        return static_cast<IntType>(std::max(k_type_min, k_toml_int_min));
+    }
+}
+
+template <typename IntType>
+constexpr IntType max_toml_integer_for_type() {
+    constexpr auto k_toml_int_max = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    constexpr auto k_type_max = static_cast<std::uint64_t>(std::numeric_limits<IntType>::max());
+    return static_cast<IntType>(std::min(k_type_max, k_toml_int_max));
+}
+
+template <typename IntType>
+bool assign_integer(const Table& table, std::string_view key, IntType& target, ServerConfigLoadResult& result) {
+    static_assert(std::is_integral_v<IntType>);
+    return assign_integer_in_range(table, key, target, min_toml_integer_for_type<IntType>(),
+                                   max_toml_integer_for_type<IntType>(), result);
+}
+
+template <typename IntType>
+bool assign_integer_non_negative(const Table& table, std::string_view key, IntType& target,
+                                 ServerConfigLoadResult& result) {
+    static_assert(std::is_integral_v<IntType>);
+    return assign_integer_in_range(table, key, target, static_cast<IntType>(0), max_toml_integer_for_type<IntType>(),
+                                   result);
 }
 
 bool assign_bool_value(const Table& table, std::string_view key, bool& target, ServerConfigLoadResult& result) {
@@ -212,23 +286,23 @@ bool parse_toml_table(std::string_view text, Table& table, ServerConfigLoadResul
 
 bool apply_server_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
     const config::TomlValue* port_raw = find_value(table, "server.port");
-    if (!assign_non_negative_integer(table, "server.port", config.port, result)) {
+    if (!assign_integer(table, "server.port", config.port, result)) {
         return false;
     }
     if (port_raw != nullptr && config.port == 0U) {
         fail(result, "value_out_of_range:server.port", port_raw->line);
         return false;
     }
-    if (!assign_non_negative_integer(table, "server.backlog", config.backlog, result)) {
+    if (!assign_integer_non_negative(table, "server.backlog", config.backlog, result)) {
         return false;
     }
-    if (!assign_non_negative_integer(table, "server.max_connections", config.max_connections, result)) {
+    if (!assign_integer(table, "server.max_connections", config.max_connections, result)) {
         return false;
     }
-    if (!assign_non_negative_integer(table, "server.sub_reactor_count", config.sub_reactor_count, result)) {
+    if (!assign_integer(table, "server.sub_reactor_count", config.sub_reactor_count, result)) {
         return false;
     }
-    if (!assign_non_negative_integer(table, "server.worker_thread_count", config.worker_thread_count, result)) {
+    if (!assign_integer(table, "server.worker_thread_count", config.worker_thread_count, result)) {
         return false;
     }
     normalize_server_thread_counts(config);
@@ -259,13 +333,13 @@ bool apply_logger_values(const Table& table, ServerConfig& config, ServerConfigL
 
 bool apply_timeout_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
     std::int64_t read_timeout_ms = config.read_timeout.count();
-    if (!assign_non_negative_integer(table, "timeouts.read_timeout_ms", read_timeout_ms, result)) {
+    if (!assign_integer_non_negative(table, "timeouts.read_timeout_ms", read_timeout_ms, result)) {
         return false;
     }
     config.read_timeout = std::chrono::milliseconds(read_timeout_ms);
 
     std::int64_t graceful_shutdown_timeout_ms = config.graceful_shutdown_timeout.count();
-    if (!assign_non_negative_integer(table, "timeouts.graceful_shutdown_timeout_ms", graceful_shutdown_timeout_ms,
+    if (!assign_integer_non_negative(table, "timeouts.graceful_shutdown_timeout_ms", graceful_shutdown_timeout_ms,
                                      result)) {
         return false;
     }
@@ -274,14 +348,13 @@ bool apply_timeout_values(const Table& table, ServerConfig& config, ServerConfig
 }
 
 bool apply_limit_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
-    if (!assign_non_negative_integer(table, "limits.max_header_bytes", config.max_header_bytes, result)) {
+    if (!assign_integer(table, "limits.max_header_bytes", config.max_header_bytes, result)) {
         return false;
     }
-    if (!assign_non_negative_integer(table, "limits.max_request_target_bytes", config.max_request_target_bytes,
-                                     result)) {
+    if (!assign_integer(table, "limits.max_request_target_bytes", config.max_request_target_bytes, result)) {
         return false;
     }
-    return assign_non_negative_integer(table, "limits.max_body_bytes", config.max_body_bytes, result);
+    return assign_integer(table, "limits.max_body_bytes", config.max_body_bytes, result);
 }
 
 bool apply_route_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
@@ -330,6 +403,99 @@ bool apply_route_values(const Table& table, ServerConfig& config, ServerConfigLo
     return true;
 }
 
+bool assign_non_empty_string_value(const Table& table, std::string_view key, std::string& target,
+                                   ServerConfigLoadResult& result) {
+    if (!assign_string_value(table, key, target, result)) {
+        return false;
+    }
+    if (!target.empty()) {
+        return true;
+    }
+
+    const config::TomlValue* raw = find_value(table, key);
+    fail(result, std::format("invalid_value:{}:empty_value", key), raw == nullptr ? 0 : raw->line);
+    return false;
+}
+
+bool validate_database_password_env(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
+    if (!assign_non_empty_string_value(table, "database.password_env", config.database_password_env, result)) {
+        return false;
+    }
+
+    const char* env_password = std::getenv(config.database_password_env.c_str());
+    if (env_password != nullptr && *env_password != '\0') {
+        return true;
+    }
+
+    const config::TomlValue* password_env_raw = find_value(table, "database.password_env");
+    fail(result, "invalid_value:database.password_env:env_not_set",
+         password_env_raw == nullptr ? 0 : password_env_raw->line);
+    return false;
+}
+
+bool apply_database_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
+    if (!assign_non_empty_string_value(table, "database.host", config.database_host, result)) {
+        return false;
+    }
+    if (!assign_integer_in_range(table, "database.port", config.database_port, static_cast<std::uint16_t>(1),
+                                 max_toml_integer_for_type<std::uint16_t>(), result)) {
+        return false;
+    }
+    if (!assign_non_empty_string_value(table, "database.name", config.database_name, result)) {
+        return false;
+    }
+    if (!assign_non_empty_string_value(table, "database.user", config.database_user, result)) {
+        return false;
+    }
+    if (!assign_integer_in_range(table, "database.max_connections", config.database_max_connections,
+                                 static_cast<std::size_t>(1), static_cast<std::size_t>(1024), result)) {
+        return false;
+    }
+    if (!assign_integer_in_range(table, "database.connect_timeout_ms", config.database_connect_timeout_ms,
+                                 static_cast<std::int64_t>(1), static_cast<std::int64_t>(60'000), result)) {
+        return false;
+    }
+    if (!assign_integer_in_range(table, "database.acquire_timeout_ms", config.database_acquire_timeout_ms,
+                                 static_cast<std::int64_t>(1), static_cast<std::int64_t>(60'000), result)) {
+        return false;
+    }
+    return validate_database_password_env(table, config, result);
+}
+
+bool apply_auth_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
+    const config::TomlValue* jwt_secret_path_raw = find_value(table, "auth.jwt_secret_path");
+    if (jwt_secret_path_raw != nullptr) {
+        const auto* jwt_secret_path = std::get_if<std::string>(&jwt_secret_path_raw->value);
+        if (jwt_secret_path == nullptr) {
+            fail(result, "type_mismatch:auth.jwt_secret_path", jwt_secret_path_raw->line);
+            return false;
+        }
+        if (jwt_secret_path->empty()) {
+            fail(result, "invalid_value:auth.jwt_secret_path:empty_value", jwt_secret_path_raw->line);
+            return false;
+        }
+        config.auth_jwt_secret_path = *jwt_secret_path;
+    }
+
+    if (!assign_integer_in_range(table, "auth.access_token_ttl_s", config.auth_access_token_ttl_s,
+                                 static_cast<std::int64_t>(0), kMaxAuthAccessTokenTtlSeconds, result)) {
+        return false;
+    }
+    if (config.auth_access_token_ttl_s == 0) {
+        const config::TomlValue* token_ttl_raw = find_value(table, "auth.access_token_ttl_s");
+        fail(result, "invalid_value:auth.access_token_ttl_s:must_be_positive",
+             token_ttl_raw == nullptr ? 0 : token_ttl_raw->line);
+        return false;
+    }
+
+    if (!assign_integer_in_range(table, "auth.password_hash_iterations", config.auth_password_hash_iterations,
+                                 auth::kMinPasswordHashIterations, auth::kMaxPasswordHashIterations, result)) {
+        return false;
+    }
+
+    return true;
+}
+
 bool apply_table_to_config(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
     if (!apply_server_values(table, config, result)) {
         return false;
@@ -344,6 +510,12 @@ bool apply_table_to_config(const Table& table, ServerConfig& config, ServerConfi
         return false;
     }
     if (!apply_route_values(table, config, result)) {
+        return false;
+    }
+    if (!apply_auth_values(table, config, result)) {
+        return false;
+    }
+    if (!apply_database_values(table, config, result)) {
         return false;
     }
     return true;
@@ -376,7 +548,7 @@ void normalize_server_thread_counts(ServerConfig& config) {
     }
 }
 
-std::string_view to_string(ServerConfigSource source) {
+std::string_view to_string(ServerConfigSource source) noexcept {
     switch (source) {
         case ServerConfigSource::Default:
             return "default";

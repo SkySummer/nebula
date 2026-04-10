@@ -82,7 +82,7 @@ SignalHandler::SignalHandler() {
     init_signal_set();
 }
 
-SignalHandler::~SignalHandler() {
+SignalHandler::~SignalHandler() noexcept {
     stop();
 }
 
@@ -99,7 +99,7 @@ void SignalHandler::init_signal_set() {
         ::sigaddset(&signal_set_, SIGTERM) != 0) {
         const int err = errno;
         common::Logger::instance()
-            .warn("signal set init failed")
+            .warn(common::LogDomain::Server, "signal set init failed")
             .field("signal", "SIGINT,SIGTERM")
             .field("errno", err, common::errno_message(err))
             .field("fallback", "run_without_signal_shutdown");
@@ -119,7 +119,7 @@ bool SignalHandler::ensure_signal_pipe() {
     if (::pipe(pipe_fds.data()) != 0) {
         const int err = errno;
         common::Logger::instance()
-            .warn("signal pipe create failed")
+            .warn(common::LogDomain::Server, "signal pipe create failed")
             .field("signal", "SIGINT,SIGTERM")
             .field("errno", err, common::errno_message(err))
             .field("fallback", "run_without_signal_shutdown");
@@ -133,7 +133,7 @@ bool SignalHandler::ensure_signal_pipe() {
         ::close(pipe_fds[0]);
         ::close(pipe_fds[1]);
         common::Logger::instance()
-            .warn("signal pipe setup failed")
+            .warn(common::LogDomain::Server, "signal pipe setup failed")
             .field("signal", "SIGINT,SIGTERM")
             .field("errno", err, common::errno_message(err))
             .field("fallback", "run_without_signal_shutdown");
@@ -153,7 +153,7 @@ bool SignalHandler::install_signal_handlers() {
     std::lock_guard lock(signal_install_mutex());
     if (active_signal_pipe_fd() >= 0) {
         common::Logger::instance()
-            .warn("signal handler install rejected")
+            .warn(common::LogDomain::Server, "signal handler install rejected")
             .field("signal", "SIGINT,SIGTERM")
             .field("error", "already_active")
             .field("fallback", "run_without_signal_shutdown");
@@ -170,7 +170,7 @@ bool SignalHandler::install_signal_handlers() {
         const int err = errno;
         active_signal_pipe_fd() = -1;
         common::Logger::instance()
-            .warn("signal handler install failed")
+            .warn(common::LogDomain::Server, "signal handler install failed")
             .field("signal", "SIGINT")
             .field("errno", err, common::errno_message(err))
             .field("fallback", "run_without_signal_shutdown");
@@ -181,7 +181,7 @@ bool SignalHandler::install_signal_handlers() {
         ::sigaction(SIGINT, &previous_sigint_action_, nullptr);
         active_signal_pipe_fd() = -1;
         common::Logger::instance()
-            .warn("signal handler install failed")
+            .warn(common::LogDomain::Server, "signal handler install failed")
             .field("signal", "SIGTERM")
             .field("errno", err, common::errno_message(err))
             .field("fallback", "run_without_signal_shutdown");
@@ -189,7 +189,9 @@ bool SignalHandler::install_signal_handlers() {
     }
 
     signal_handlers_installed_ = true;
-    common::Logger::instance().info("termination signal handlers installed").field("signal", "SIGINT,SIGTERM");
+    common::Logger::instance()
+        .info(common::LogDomain::Server, "termination signal handlers installed")
+        .field("signal", "SIGINT,SIGTERM");
     return true;
 }
 
@@ -204,7 +206,7 @@ void SignalHandler::uninstall_signal_handlers() noexcept {
     if (::sigaction(SIGINT, &previous_sigint_action_, nullptr) != 0) {
         const int err = errno;
         common::Logger::instance()
-            .warn("signal handler restore failed")
+            .warn(common::LogDomain::Server, "signal handler restore failed")
             .field("signal", "SIGINT")
             .field("errno", err, common::errno_message(err))
             .field("decision", "keep_current_handler");
@@ -212,7 +214,7 @@ void SignalHandler::uninstall_signal_handlers() noexcept {
     if (::sigaction(SIGTERM, &previous_sigterm_action_, nullptr) != 0) {
         const int err = errno;
         common::Logger::instance()
-            .warn("signal handler restore failed")
+            .warn(common::LogDomain::Server, "signal handler restore failed")
             .field("signal", "SIGTERM")
             .field("errno", err, common::errno_message(err))
             .field("decision", "keep_current_handler");
@@ -246,7 +248,7 @@ void SignalHandler::wake_wait_loop() const noexcept {
         }
 
         common::Logger::instance()
-            .warn("signal wake write failed")
+            .warn(common::LogDomain::Server, "signal wake write failed")
             .field("fd", signal_pipe_write_fd_)
             .field("errno", err, common::errno_message(err))
             .field("decision", "wait_loop_poll_timeout");
@@ -256,7 +258,7 @@ void SignalHandler::wake_wait_loop() const noexcept {
 bool SignalHandler::handle_non_readable_events(int fd, std::int16_t events) noexcept {
     if ((events & (POLLERR | POLLNVAL)) != 0U) {
         common::Logger::instance()
-            .warn("signal wait failed")
+            .warn(common::LogDomain::Server, "signal wait failed")
             .field("fd", fd)
             .field("events", events)
             .field("decision", "exit_wait_loop");
@@ -272,7 +274,7 @@ bool SignalHandler::handle_signal_event(unsigned char signal, const std::functio
 
     const int value = static_cast<int>(signal);
     common::Logger::instance()
-        .info("termination signal received")
+        .info(common::LogDomain::Server, "termination signal received")
         .field("signal", value, signal_name(value))
         .field("decision", "request_server_stop");
     if (stop_callback) {
@@ -305,7 +307,7 @@ bool SignalHandler::drain_signal_pipe() noexcept {
 
         const int err = errno;
         common::Logger::instance()
-            .warn("signal pipe read failed")
+            .warn(common::LogDomain::Server, "signal pipe read failed")
             .field("fd", signal_pipe_read_fd_)
             .field("errno", err, common::errno_message(err))
             .field("decision", "exit_wait_loop");
@@ -341,7 +343,7 @@ void SignalHandler::start(std::function<void()> stop_callback) {
         uninstall_signal_handlers();
         close_signal_pipe();
         common::Logger::instance()
-            .warn("signal thread start failed")
+            .warn(common::LogDomain::Server, "signal thread start failed")
             .field("error", e.what())
             .field("fallback", "run_without_signal_shutdown");
     } catch (...) {
@@ -349,7 +351,7 @@ void SignalHandler::start(std::function<void()> stop_callback) {
         uninstall_signal_handlers();
         close_signal_pipe();
         common::Logger::instance()
-            .warn("signal thread start failed")
+            .warn(common::LogDomain::Server, "signal thread start failed")
             .field("error", "unknown")
             .field("fallback", "run_without_signal_shutdown");
     }
@@ -385,7 +387,7 @@ void SignalHandler::wait_loop() noexcept {
             }
             const int err = errno;
             common::Logger::instance()
-                .warn("signal wait failed")
+                .warn(common::LogDomain::Server, "signal wait failed")
                 .field("signal", "SIGINT,SIGTERM")
                 .field("timeout_ms", signal_wait_poll_ms)
                 .field("errno", err, common::errno_message(err))

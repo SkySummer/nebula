@@ -5,6 +5,8 @@
 #include <charconv>
 #include <utility>
 
+#include "nebula/common/string_utils.hpp"
+
 namespace nebula::config {
 
 namespace {
@@ -26,20 +28,6 @@ bool is_valid_token(std::string_view text) {
         return false;
     }
     return std::ranges::all_of(text, [](unsigned char ch) { return is_valid_token_char(ch); });
-}
-
-std::string_view trim_ascii(std::string_view text) {
-    std::size_t begin = 0;
-    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
-        ++begin;
-    }
-
-    std::size_t end = text.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
-        --end;
-    }
-
-    return text.substr(begin, end - begin);
 }
 
 std::string_view strip_comment(std::string_view line) {
@@ -174,7 +162,7 @@ bool parse_section_line(std::string_view trimmed, std::string& section, std::str
         return false;
     }
 
-    const std::string_view name = trim_ascii(trimmed.substr(1U, trimmed.size() - 2U));
+    const std::string_view name = common::trim_ascii(trimmed.substr(1U, trimmed.size() - 2U));
     if (!is_valid_token(name)) {
         error = "invalid_section_name";
         return false;
@@ -228,8 +216,8 @@ bool parse_key_value_line(std::string_view trimmed, std::string_view section, st
         return false;
     }
 
-    const std::string_view raw_key = trim_ascii(trimmed.substr(0U, eq));
-    const std::string_view raw_value = trim_ascii(trimmed.substr(eq + 1U));
+    const std::string_view raw_key = common::trim_ascii(trimmed.substr(0U, eq));
+    const std::string_view raw_value = common::trim_ascii(trimmed.substr(eq + 1U));
     if (!is_valid_token(raw_key)) {
         error = "invalid_key";
         return false;
@@ -282,7 +270,7 @@ TomlParseResult parse_toml(std::string_view text) {
         }
 
         const std::string_view without_comment = strip_comment(line);
-        const std::string_view trimmed = trim_ascii(without_comment);
+        const std::string_view trimmed = common::trim_ascii(without_comment);
 
         if (!trimmed.empty()) {
             std::string parse_error;

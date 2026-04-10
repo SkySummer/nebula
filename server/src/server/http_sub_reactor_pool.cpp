@@ -23,13 +23,15 @@ HttpSubReactorPool::HttpSubReactorPool(const ServerConfig& config, RequestDispat
       force_close_provider_(std::move(force_close_provider)),
       fatal_error_callback_(std::move(fatal_error_callback)) {}
 
-HttpSubReactorPool::~HttpSubReactorPool() = default;
+HttpSubReactorPool::~HttpSubReactorPool() noexcept = default;
 
 bool HttpSubReactorPool::start() {
     next_sub_reactor_index_ = 0;
 
     if (config_ == nullptr) {
-        common::Logger::instance().error("init sub reactors failed").field("error", "config_missing");
+        common::Logger::instance()
+            .error(common::LogDomain::Server, "init sub reactors failed")
+            .field("error", "config_missing");
         return false;
     }
 
@@ -44,7 +46,7 @@ bool HttpSubReactorPool::start() {
 
     if (sub_reactors_.size() != config_->sub_reactor_count) {
         common::Logger::instance()
-            .error("init sub reactors failed")
+            .error(common::LogDomain::Server, "init sub reactors failed")
             .field("count", sub_reactors_.size())
             .field("expected_count", config_->sub_reactor_count)
             .field("error", "sub_reactor_count_mismatch");
@@ -62,7 +64,9 @@ bool HttpSubReactorPool::start() {
     }
 
     started_sub_reactor_count_ = started_count;
-    common::Logger::instance().info("sub reactors started").field("count", started_sub_reactor_count_);
+    common::Logger::instance()
+        .info(common::LogDomain::Server, "sub reactors started")
+        .field("count", started_sub_reactor_count_);
     return true;
 }
 
@@ -78,13 +82,17 @@ void HttpSubReactorPool::shutdown() {
     }
 
     if (started_count > 0) {
-        common::Logger::instance().info("sub reactors stopped").field("count", started_count);
+        common::Logger::instance()
+            .info(common::LogDomain::Server, "sub reactors stopped")
+            .field("count", started_count);
     }
 
     started_sub_reactor_count_ = 0;
 
     if (dropped_pending_count > 0) {
-        common::Logger::instance().info("pending responses cleared").field("count", dropped_pending_count);
+        common::Logger::instance()
+            .info(common::LogDomain::Server, "pending responses cleared")
+            .field("count", dropped_pending_count);
     }
 }
 
@@ -103,7 +111,7 @@ void HttpSubReactorPool::notify_all() {
 bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted, std::uint64_t connection_token) {
     if (sub_reactors_.empty()) {
         common::Logger::instance()
-            .error("dispatch connection failed")
+            .error(common::LogDomain::Server, "dispatch connection failed")
             .field("fd", accepted.fd)
             .field("peer", accepted.peer)
             .field("error", "no_sub_reactor")
@@ -123,7 +131,7 @@ bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted
     try {
         if (!sub_reactors_[reactor_id]->enqueue_accept(std::move(pending))) {
             common::Logger::instance()
-                .debug("dispatch connection failed")
+                .debug(common::LogDomain::Server, "dispatch connection failed")
                 .field("fd", accepted.fd)
                 .field("peer", accepted.peer)
                 .field("reactor_id", reactor_id)
@@ -134,7 +142,7 @@ bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted
         }
     } catch (const std::exception& e) {
         common::Logger::instance()
-            .error("dispatch connection failed")
+            .error(common::LogDomain::Server, "dispatch connection failed")
             .field("fd", accepted.fd)
             .field("peer", accepted.peer)
             .field("reactor_id", reactor_id)
@@ -144,7 +152,7 @@ bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted
         return false;
     } catch (...) {
         common::Logger::instance()
-            .error("dispatch connection failed")
+            .error(common::LogDomain::Server, "dispatch connection failed")
             .field("fd", accepted.fd)
             .field("peer", accepted.peer)
             .field("reactor_id", reactor_id)
@@ -155,7 +163,7 @@ bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted
     }
 
     common::Logger::instance()
-        .debug("connection dispatched")
+        .debug(common::LogDomain::Server, "connection dispatched")
         .field("fd", accepted.fd)
         .field("peer", accepted.peer)
         .field("reactor_id", reactor_id);
@@ -168,7 +176,7 @@ bool HttpSubReactorPool::enqueue_response(ReactorResponseTask response) {
     const std::uint64_t connection_token = response.connection_token;
     if (reactor_id >= sub_reactors_.size()) {
         common::Logger::instance()
-            .debug("response dropped")
+            .debug(common::LogDomain::Server, "response dropped")
             .field("fd", fd)
             .field("reactor_id", reactor_id)
             .field("connection_token", connection_token)
@@ -180,7 +188,7 @@ bool HttpSubReactorPool::enqueue_response(ReactorResponseTask response) {
 
     if (!enqueued) {
         common::Logger::instance()
-            .debug("response dropped")
+            .debug(common::LogDomain::Server, "response dropped")
             .field("fd", fd)
             .field("reactor_id", reactor_id)
             .field("connection_token", connection_token)

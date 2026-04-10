@@ -11,7 +11,7 @@ namespace nebula::net {
 class EpollLoop {
 public:
     EpollLoop() = default;
-    ~EpollLoop();
+    ~EpollLoop() noexcept;
 
     EpollLoop(const EpollLoop&) = delete;
     EpollLoop& operator=(const EpollLoop&) = delete;
@@ -20,7 +20,7 @@ public:
     EpollLoop& operator=(EpollLoop&& other) noexcept;
 
     bool open();
-    void close();
+    void close() noexcept;
 
     [[nodiscard]] int fd() const;
 

@@ -14,7 +14,7 @@ struct AcceptedSocket {
 class Listener {
 public:
     Listener() = default;
-    ~Listener();
+    ~Listener() noexcept;
 
     Listener(const Listener&) = delete;
     Listener& operator=(const Listener&) = delete;
@@ -23,7 +23,7 @@ public:
     Listener& operator=(Listener&& other) noexcept;
 
     bool open(std::uint16_t port, int backlog);
-    void close();
+    void close() noexcept;
 
     [[nodiscard]] int fd() const;
     [[nodiscard]] std::uint16_t port() const;

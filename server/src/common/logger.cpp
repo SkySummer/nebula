@@ -10,6 +10,8 @@
 #include <system_error>
 #include <utility>
 
+#include "nebula/common/posix_utils.hpp"
+
 namespace nebula::common {
 
 namespace {
@@ -96,9 +98,37 @@ std::string format_log_line(std::string_view timestamp, LogLevel level, std::str
     return std::format("[{}] [{}] {}", timestamp, to_string(level), format_body(event, fields));
 }
 
+void report_entry_emit_error(const char* error) noexcept {
+    std::fputs("logger entry emit failed: error=", stderr);
+    std::fputs(error != nullptr ? error : "unknown", stderr);
+    std::fputc('\n', stderr);
+}
+
+void report_entry_field_append_error(const char* error) noexcept {
+    std::fputs("logger entry field append failed: error=", stderr);
+    std::fputs(error != nullptr ? error : "unknown", stderr);
+    std::fputc('\n', stderr);
+}
+
+void report_logger_api_error(const char* api, const char* error) noexcept {
+    std::fputs("logger api failed: api=", stderr);
+    std::fputs(api != nullptr ? api : "unknown", stderr);
+    std::fputs(", error=", stderr);
+    std::fputs(error != nullptr ? error : "unknown", stderr);
+    std::fputc('\n', stderr);
+}
+
+void report_logger_internal_error(const char* stage, const char* error) noexcept {
+    std::fputs("logger internal failed: stage=", stderr);
+    std::fputs(stage != nullptr ? stage : "unknown", stderr);
+    std::fputs(", error=", stderr);
+    std::fputs(error != nullptr ? error : "unknown", stderr);
+    std::fputc('\n', stderr);
+}
+
 }  // namespace
 
-std::string_view to_string(LogLevel level) {
+std::string_view to_string(LogLevel level) noexcept {
     switch (level) {
         case LogLevel::Trace:
             return "TRACE";
@@ -110,8 +140,28 @@ std::string_view to_string(LogLevel level) {
             return "WARN";
         case LogLevel::Error:
             return "ERROR";
+        case LogLevel::Fatal:
+            return "FATAL";
     }
     return "UNKNOWN";
+}
+
+std::string_view to_string(LogDomain domain) noexcept {
+    switch (domain) {
+        case LogDomain::Auth:
+            return "auth";
+        case LogDomain::Common:
+            return "common";
+        case LogDomain::Http:
+            return "http";
+        case LogDomain::Server:
+            return "server";
+        case LogDomain::User:
+            return "user";
+        case LogDomain::Test:
+            return "test";
+    }
+    return "unknown";
 }
 
 Logger& Logger::instance() {
@@ -132,88 +182,207 @@ Logger::Entry::Entry(Entry&& other) noexcept
     other.emitted_ = true;
 }
 
-Logger::Entry::~Entry() {
-    try {
-        emit();
-    } catch (...) {
-        std::fputs("logger entry emit failed: error=unknown, decision=ignore\n", stderr);
-    }
+void Logger::Entry::report_field_append_error(const char* error) noexcept {
+    report_entry_field_append_error(error);
 }
 
-Logger::Entry& Logger::Entry::field(Field field_value) {
-    fields_.push_back(std::move(field_value));
+Logger::Entry::~Entry() noexcept {
+    emit();
+}
+
+Logger::Entry& Logger::Entry::field(Field field_value) noexcept {
+    try {
+        fields_.push_back(std::move(field_value));
+    } catch (const std::exception& e) {
+        report_field_append_error(e.what());
+    } catch (...) {
+        report_field_append_error("unknown");
+    }
     return *this;
 }
 
-void Logger::Entry::emit() {
+void Logger::Entry::emit() noexcept {
     if (logger_ == nullptr || emitted_) {
         return;
     }
 
-    emitted_ = true;
-    logger_->log(level_, event_, fields_);
-}
-
-Logger::Entry Logger::trace(std::string_view event) {
-    return {*this, LogLevel::Trace, event};
-}
-
-Logger::Entry Logger::debug(std::string_view event) {
-    return {*this, LogLevel::Debug, event};
-}
-
-Logger::Entry Logger::info(std::string_view event) {
-    return {*this, LogLevel::Info, event};
-}
-
-Logger::Entry Logger::warn(std::string_view event) {
-    return {*this, LogLevel::Warning, event};
-}
-
-Logger::Entry Logger::error(std::string_view event) {
-    return {*this, LogLevel::Error, event};
-}
-
-void Logger::init(LogLevel default_level, std::filesystem::path log_dir, bool also_stderr) {
-    std::lock_guard lock(mutex_);
-    level_ = default_level;
-    log_dir_ = std::move(log_dir);
-    also_stderr_ = also_stderr;
-    force_stderr_only_ = false;
-    initialized_ = true;
-
-    current_date_.clear();
-    file_.close();
-    file_.clear();
-
-    const auto now = std::chrono::system_clock::now();
-    const TimeText time_text = format_local_time_text(now);
-    rotate_file_if_needed_locked(time_text.date, time_text.timestamp);
-}
-
-void Logger::set_level(LogLevel level) {
-    std::lock_guard lock(mutex_);
-    level_ = level;
-}
-
-LogLevel Logger::level() const {
-    std::lock_guard lock(mutex_);
-    return level_;
-}
-
-void Logger::log(LogLevel level, std::string_view event, std::span<const Field> fields) {
-    std::lock_guard lock(mutex_);
-    ensure_initialized_locked();
-    if (!should_log(level)) {
-        return;
+    try {
+        emitted_ = true;
+        logger_->log(level_, event_, fields_);
+    } catch (const std::exception& e) {
+        report_entry_emit_error(e.what());
+    } catch (...) {
+        report_entry_emit_error("unknown");
     }
+}
 
-    const auto now = std::chrono::system_clock::now();
-    const TimeText time_text = format_local_time_text(now);
-    rotate_file_if_needed_locked(time_text.date, time_text.timestamp);
+Logger::Entry Logger::trace(std::string_view event) noexcept {
+    try {
+        return {*this, LogLevel::Trace, event};
+    } catch (const std::exception& e) {
+        report_logger_api_error("trace", e.what());
+    } catch (...) {
+        report_logger_api_error("trace", "unknown");
+    }
+    return {};
+}
 
-    const std::string line = format_log_line(time_text.timestamp, level, event, fields);
-    write_line_locked(line);
+Logger::Entry Logger::trace(LogDomain domain, std::string_view event) noexcept {
+    Entry entry = trace(event);
+    entry.field("domain", to_string(domain));
+    return entry;
+}
+
+Logger::Entry Logger::debug(std::string_view event) noexcept {
+    try {
+        return {*this, LogLevel::Debug, event};
+    } catch (const std::exception& e) {
+        report_logger_api_error("debug", e.what());
+    } catch (...) {
+        report_logger_api_error("debug", "unknown");
+    }
+    return {};
+}
+
+Logger::Entry Logger::debug(LogDomain domain, std::string_view event) noexcept {
+    Entry entry = debug(event);
+    entry.field("domain", to_string(domain));
+    return entry;
+}
+
+Logger::Entry Logger::info(std::string_view event) noexcept {
+    try {
+        return {*this, LogLevel::Info, event};
+    } catch (const std::exception& e) {
+        report_logger_api_error("info", e.what());
+    } catch (...) {
+        report_logger_api_error("info", "unknown");
+    }
+    return {};
+}
+
+Logger::Entry Logger::info(LogDomain domain, std::string_view event) noexcept {
+    Entry entry = info(event);
+    entry.field("domain", to_string(domain));
+    return entry;
+}
+
+Logger::Entry Logger::warn(std::string_view event) noexcept {
+    try {
+        return {*this, LogLevel::Warning, event};
+    } catch (const std::exception& e) {
+        report_logger_api_error("warn", e.what());
+    } catch (...) {
+        report_logger_api_error("warn", "unknown");
+    }
+    return {};
+}
+
+Logger::Entry Logger::warn(LogDomain domain, std::string_view event) noexcept {
+    Entry entry = warn(event);
+    entry.field("domain", to_string(domain));
+    return entry;
+}
+
+Logger::Entry Logger::error(std::string_view event) noexcept {
+    try {
+        return {*this, LogLevel::Error, event};
+    } catch (const std::exception& e) {
+        report_logger_api_error("error", e.what());
+    } catch (...) {
+        report_logger_api_error("error", "unknown");
+    }
+    return {};
+}
+
+Logger::Entry Logger::error(LogDomain domain, std::string_view event) noexcept {
+    Entry entry = error(event);
+    entry.field("domain", to_string(domain));
+    return entry;
+}
+
+Logger::Entry Logger::fatal(std::string_view event) noexcept {
+    try {
+        return {*this, LogLevel::Fatal, event};
+    } catch (const std::exception& e) {
+        report_logger_api_error("fatal", e.what());
+    } catch (...) {
+        report_logger_api_error("fatal", "unknown");
+    }
+    return {};
+}
+
+Logger::Entry Logger::fatal(LogDomain domain, std::string_view event) noexcept {
+    Entry entry = fatal(event);
+    entry.field("domain", to_string(domain));
+    return entry;
+}
+
+void Logger::initialize(LogLevel default_level, std::filesystem::path log_dir, bool also_stderr) noexcept {
+    try {
+        std::lock_guard lock(mutex_);
+        level_ = default_level;
+        log_dir_ = std::move(log_dir);
+        also_stderr_ = also_stderr;
+        force_stderr_only_ = false;
+        initialized_ = true;
+
+        current_date_.clear();
+        file_.close();
+        file_.clear();
+
+        const auto now = std::chrono::system_clock::now();
+        const TimeText time_text = format_local_time_text(now);
+        rotate_file_if_needed_locked(time_text.date, time_text.timestamp);
+    } catch (const std::exception& e) {
+        report_logger_api_error("initialize", e.what());
+    } catch (...) {
+        report_logger_api_error("initialize", "unknown");
+    }
+}
+
+void Logger::set_level(LogLevel level) noexcept {
+    try {
+        std::lock_guard lock(mutex_);
+        level_ = level;
+    } catch (const std::exception& e) {
+        report_logger_api_error("set_level", e.what());
+    } catch (...) {
+        report_logger_api_error("set_level", "unknown");
+    }
+}
+
+LogLevel Logger::level() const noexcept {
+    try {
+        std::lock_guard lock(mutex_);
+        return level_;
+    } catch (const std::exception& e) {
+        report_logger_api_error("level", e.what());
+    } catch (...) {
+        report_logger_api_error("level", "unknown");
+    }
+    return LogLevel::Info;
+}
+
+void Logger::log(LogLevel level, std::string_view event, std::span<const Field> fields) noexcept {
+    try {
+        std::lock_guard lock(mutex_);
+        ensure_initialized_locked();
+        if (!should_log(level)) {
+            return;
+        }
+
+        const auto now = std::chrono::system_clock::now();
+        const TimeText time_text = format_local_time_text(now);
+        rotate_file_if_needed_locked(time_text.date, time_text.timestamp);
+
+        const std::string line = format_log_line(time_text.timestamp, level, event, fields);
+        write_line_locked(line);
+    } catch (const std::exception& e) {
+        report_logger_internal_error("log", e.what());
+    } catch (...) {
+        report_logger_internal_error("log", "unknown");
+    }
 }
 
 void Logger::ensure_initialized_locked() {
@@ -236,7 +405,7 @@ void Logger::ensure_initialized_locked() {
 }
 
 void Logger::rotate_file_if_needed_locked(std::string_view date, std::string_view timestamp) {
-    if (current_date_ == date && file_.is_open()) {
+    if (current_date_ == date && (file_.is_open() || force_stderr_only_)) {
         return;
     }
 
@@ -250,7 +419,7 @@ void Logger::rotate_file_if_needed_locked(std::string_view date, std::string_vie
         };
         std::cerr << format_log_line(timestamp, LogLevel::Error, "create log directory failed", fields) << '\n';
         file_.close();
-        current_date_.clear();
+        current_date_ = date;
         force_stderr_only_ = true;
         return;
     }
@@ -262,14 +431,13 @@ void Logger::rotate_file_if_needed_locked(std::string_view date, std::string_vie
     file_.open(file_path, std::ios::app);
     if (!file_.is_open()) {
         const int err = errno;
-        const std::string err_text = err == 0 ? "unknown" : std::system_category().message(err);
         const std::array<Field, 3> fields = {
             Field("path", file_path.string()),
-            Field("errno", err, err_text),
+            Field("errno", err, common::errno_message(err)),
             Field("fallback", "stderr_only"),
         };
         std::cerr << format_log_line(timestamp, LogLevel::Error, "open log file failed", fields) << '\n';
-        current_date_.clear();
+        current_date_ = date;
         force_stderr_only_ = true;
         return;
     }

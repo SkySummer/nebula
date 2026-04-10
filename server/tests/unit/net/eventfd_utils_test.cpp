@@ -1,5 +1,4 @@
 #include <cerrno>
-#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -81,7 +80,7 @@ public:
         set_fault_state(std::move(read_faults), std::move(write_faults));
     }
 
-    ~ScopedFaultInjection() {
+    ~ScopedFaultInjection() noexcept {
         clear_fault_state();
     }
 
@@ -94,7 +93,7 @@ public:
 class ScopedFd {
 public:
     explicit ScopedFd(int fd) : fd_(fd) {}
-    ~ScopedFd() {
+    ~ScopedFd() noexcept {
         if (fd_ >= 0) {
             ::close(fd_);
         }

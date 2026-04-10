@@ -1,12 +1,12 @@
 #include "nebula/server/server_app.hpp"
 
-#include <cstdio>
 #include <exception>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
 
+#include "nebula/auth/auth_http.hpp"
 #include "nebula/common/logger.hpp"
 #include "nebula/http/router.hpp"
 #include "nebula/server/http_server.hpp"
@@ -15,38 +15,27 @@ namespace nebula::server {
 
 namespace {
 
-void report_log_emit_error(const char* event) noexcept {
-    std::fputs("server app log emit failed: event=", stderr);
-    std::fputs(event != nullptr ? event : "unknown", stderr);
-    std::fputs(", error=logger_emit_failed, decision=ignore", stderr);
-    std::fputc('\n', stderr);
-}
-
-void log_route_operation_error(const char* event, const char* fallback_event, http::HttpMethod method,
-                               const std::string& path, const char* error,
+void log_route_operation_error(const char* event, http::HttpMethod method, const std::string& path, const char* error,
                                const std::string* source_path = nullptr) noexcept {
-    try {
-        auto entry = common::Logger::instance().error(event != nullptr ? event : "route operation failed");
-        entry.field("method", http::to_string(method)).field("path", path);
-        if (source_path != nullptr) {
-            entry.field("source_path", *source_path);
-        }
-        entry.field("error", error != nullptr ? error : "unknown");
-    } catch (...) {
-        report_log_emit_error(fallback_event);
+    auto entry = common::Logger::instance().error(common::LogDomain::Server,
+                                                  event != nullptr ? event : "route operation failed");
+    entry.field("method", http::to_string(method)).field("path", path);
+    if (source_path != nullptr) {
+        entry.field("source_path", *source_path);
     }
+    entry.field("error", error != nullptr ? error : "unknown");
 }
 
 template <typename Op>
-bool execute_route_operation(const char* event, const char* fallback_event, http::HttpMethod method,
-                             const std::string& path, const std::string* source_path, Op&& operation) noexcept {
+bool execute_route_operation(const char* event, http::HttpMethod method, const std::string& path,
+                             const std::string* source_path, Op&& operation) noexcept {
     try {
         return std::forward<Op>(operation)();
     } catch (const std::exception& e) {
-        log_route_operation_error(event, fallback_event, method, path, e.what(), source_path);
+        log_route_operation_error(event, method, path, e.what(), source_path);
         return false;
     } catch (...) {
-        log_route_operation_error(event, fallback_event, method, path, "unknown", source_path);
+        log_route_operation_error(event, method, path, "unknown", source_path);
         return false;
     }
 }
@@ -64,7 +53,7 @@ std::shared_ptr<http::Router> build_default_router(const ServerConfig& config) {
         });
         if (!added) {
             common::Logger::instance()
-                .error("register default route failed")
+                .fatal(common::LogDomain::Server, "register default route failed")
                 .field("method", http::to_string(http::HttpMethod::Get))
                 .field("path", "/healthz")
                 .field("decision", "exit_process");
@@ -82,7 +71,7 @@ std::shared_ptr<http::Router> build_default_router(const ServerConfig& config) {
         });
         if (!added) {
             common::Logger::instance()
-                .error("register default route failed")
+                .fatal(common::LogDomain::Server, "register default route failed")
                 .field("method", http::to_string(http::HttpMethod::Post))
                 .field("path", "/echo")
                 .field("decision", "exit_process");
@@ -101,7 +90,7 @@ bool register_root_default_route(const ServerConfig& config, const std::shared_p
     const std::string& root_default_path = config.root_default_path;
     if (!router->has_route_exact(http::HttpMethod::Get, root_default_path)) {
         common::Logger::instance()
-            .error("register default route failed")
+            .fatal(common::LogDomain::Server, "register default route failed")
             .field("method", http::to_string(http::HttpMethod::Get))
             .field("path", "/")
             .field("target_path", root_default_path)
@@ -113,7 +102,7 @@ bool register_root_default_route(const ServerConfig& config, const std::shared_p
     const bool root_added = router->add_route(http::HttpMethod::Get, "/", root_default_path);
     if (!root_added && !router->has_route_exact(http::HttpMethod::Get, "/")) {
         common::Logger::instance()
-            .error("register default route failed")
+            .fatal(common::LogDomain::Server, "register default route failed")
             .field("method", http::to_string(http::HttpMethod::Get))
             .field("path", "/")
             .field("target_path", root_default_path)
@@ -140,8 +129,30 @@ std::shared_ptr<http::Router> ServerApp::get_router() const {
     return router_;
 }
 
+bool ServerApp::ensure_auth_routes_registered(const std::shared_ptr<http::Router>& router) const {
+    if (router == nullptr) {
+        return false;
+    }
+
+    std::lock_guard lock(router_mutex_);
+    if (auth_routes_registered_) {
+        return true;
+    }
+
+    if (!auth::register_auth_routes(startup_.config, router)) {
+        common::Logger::instance()
+            .fatal(common::LogDomain::Server, "register auth routes failed")
+            .field("error", "register_auth_routes_failed")
+            .field("decision", "exit_process");
+        return false;
+    }
+
+    auth_routes_registered_ = true;
+    return true;
+}
+
 bool ServerApp::add_route(http::HttpMethod method, const std::string& path, http::Router::Handler handler) noexcept {
-    return execute_route_operation("add route failed", "add_route_failed", method, path, nullptr, [&]() {
+    return execute_route_operation("add route failed", method, path, nullptr, [&]() {
         const std::shared_ptr<http::Router> router = get_router();
         if (router == nullptr) {
             return false;
@@ -151,7 +162,7 @@ bool ServerApp::add_route(http::HttpMethod method, const std::string& path, http
 }
 
 bool ServerApp::add_route(http::HttpMethod method, const std::string& path, const std::string& source_path) noexcept {
-    return execute_route_operation("add route failed", "add_route_failed", method, path, &source_path, [&]() {
+    return execute_route_operation("add route failed", method, path, &source_path, [&]() {
         const std::shared_ptr<http::Router> router = get_router();
         if (router == nullptr) {
             return false;
@@ -161,7 +172,7 @@ bool ServerApp::add_route(http::HttpMethod method, const std::string& path, cons
 }
 
 bool ServerApp::mod_route(http::HttpMethod method, const std::string& path, http::Router::Handler handler) noexcept {
-    return execute_route_operation("mod route failed", "mod_route_failed", method, path, nullptr, [&]() {
+    return execute_route_operation("mod route failed", method, path, nullptr, [&]() {
         const std::shared_ptr<http::Router> router = get_router();
         if (router == nullptr) {
             return false;
@@ -171,7 +182,7 @@ bool ServerApp::mod_route(http::HttpMethod method, const std::string& path, http
 }
 
 bool ServerApp::mod_route(http::HttpMethod method, const std::string& path, const std::string& source_path) noexcept {
-    return execute_route_operation("mod route failed", "mod_route_failed", method, path, &source_path, [&]() {
+    return execute_route_operation("mod route failed", method, path, &source_path, [&]() {
         const std::shared_ptr<http::Router> router = get_router();
         if (router == nullptr) {
             return false;
@@ -181,7 +192,7 @@ bool ServerApp::mod_route(http::HttpMethod method, const std::string& path, cons
 }
 
 bool ServerApp::del_route(http::HttpMethod method, const std::string& path) noexcept {
-    return execute_route_operation("del route failed", "del_route_failed", method, path, nullptr, [&]() {
+    return execute_route_operation("del route failed", method, path, nullptr, [&]() {
         const std::shared_ptr<http::Router> router = get_router();
         if (router == nullptr) {
             return false;
@@ -191,7 +202,7 @@ bool ServerApp::del_route(http::HttpMethod method, const std::string& path) noex
 }
 
 bool ServerApp::has_route_match(http::HttpMethod method, const std::string& path) const noexcept {
-    return execute_route_operation("has route match failed", "has_route_match_failed", method, path, nullptr, [&]() {
+    return execute_route_operation("has route match failed", method, path, nullptr, [&]() {
         const std::shared_ptr<http::Router> router = get_router();
         if (router == nullptr) {
             return false;
@@ -201,7 +212,7 @@ bool ServerApp::has_route_match(http::HttpMethod method, const std::string& path
 }
 
 bool ServerApp::has_route_exact(http::HttpMethod method, const std::string& path) const noexcept {
-    return execute_route_operation("has route exact failed", "has_route_exact_failed", method, path, nullptr, [&]() {
+    return execute_route_operation("has route exact failed", method, path, nullptr, [&]() {
         const std::shared_ptr<http::Router> router = get_router();
         if (router == nullptr) {
             return false;
@@ -216,16 +227,16 @@ int ServerApp::run() const {
         return 1;
     }
 
-    common::Logger::instance().init(startup_.config.log_level, startup_.config.log_dir,
-                                    startup_.config.log_also_stderr);
+    common::Logger::instance().initialize(startup_.config.log_level, startup_.config.log_dir,
+                                          startup_.config.log_also_stderr);
 
     if (startup_.config_source == ServerConfigSource::Default) {
         common::Logger::instance()
-            .info("server config defaults applied")
+            .info(common::LogDomain::Server, "server config defaults applied")
             .field("source", to_string(startup_.config_source));
     } else {
         common::Logger::instance()
-            .info("server config loaded")
+            .info(common::LogDomain::Server, "server config loaded")
             .field("source", to_string(startup_.config_source))
             .field("path", startup_.config_path.string());
     }
@@ -237,6 +248,9 @@ int ServerApp::run() const {
     if (!register_root_default_route(startup_.config, router)) {
         return 1;
     }
+    if (!ensure_auth_routes_registered(router)) {
+        return 1;
+    }
 
     HttpServerRuntime runtime = HttpServerBuilder().with_config(startup_.config).with_router(router).build();
     const RunResult run_result = runtime.run();
@@ -244,7 +258,7 @@ int ServerApp::run() const {
     const int exit_code = success ? 0 : 1;
 
     common::Logger::instance()
-        .info("server process exiting")
+        .info(common::LogDomain::Server, "server process exiting")
         .field("run_result", to_string(run_result))
         .field("exit_code", exit_code)
         .field("result", success ? "success" : "failed");

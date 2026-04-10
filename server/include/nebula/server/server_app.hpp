@@ -27,10 +27,12 @@ public:
 
 private:
     [[nodiscard]] std::shared_ptr<http::Router> get_router() const;
+    [[nodiscard]] bool ensure_auth_routes_registered(const std::shared_ptr<http::Router>& router) const;
 
     StartupResult startup_;
     mutable std::mutex router_mutex_;
     mutable std::shared_ptr<http::Router> router_;
+    mutable bool auth_routes_registered_ = false;
 };
 
 }  // namespace nebula::server

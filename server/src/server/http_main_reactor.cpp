@@ -24,7 +24,7 @@ bool HttpMainReactor::open(std::uint16_t port, int backlog) {
     if (!listener_.open(port, backlog)) {
         const int err = errno;
         common::Logger::instance()
-            .error("open listener failed")
+            .error(common::LogDomain::Server, "open listener failed")
             .field("port", port)
             .field("errno", err, common::errno_message(err));
         return false;
@@ -34,7 +34,7 @@ bool HttpMainReactor::open(std::uint16_t port, int backlog) {
         const int err = errno;
         listener_.close();
         common::Logger::instance()
-            .error("open epoll failed")
+            .error(common::LogDomain::Server, "open epoll failed")
             .field("port", port)
             .field("errno", err, common::errno_message(err));
         return false;
@@ -46,7 +46,7 @@ bool HttpMainReactor::open(std::uint16_t port, int backlog) {
         epoll_.close();
         listener_.close();
         common::Logger::instance()
-            .error("create wakeup fd failed")
+            .error(common::LogDomain::Server, "create wakeup fd failed")
             .field("port", port)
             .field("errno", err, common::errno_message(err));
         return false;
@@ -59,7 +59,7 @@ bool HttpMainReactor::open(std::uint16_t port, int backlog) {
         epoll_.close();
         listener_.close();
         common::Logger::instance()
-            .error("epoll add listener failed")
+            .error(common::LogDomain::Server, "epoll add listener failed")
             .field("fd", listener_fd)
             .field("errno", err, common::errno_message(err));
         return false;
@@ -71,7 +71,7 @@ bool HttpMainReactor::open(std::uint16_t port, int backlog) {
         epoll_.close();
         listener_.close();
         common::Logger::instance()
-            .error("epoll add wakeup failed")
+            .error(common::LogDomain::Server, "epoll add wakeup failed")
             .field("fd", wakeup_fd)
             .field("errno", err, common::errno_message(err));
         return false;
@@ -106,7 +106,7 @@ bool HttpMainReactor::wait_and_process_events(const std::function<void()>& on_li
         }
         const int err = errno;
         common::Logger::instance()
-            .error("epoll wait failed")
+            .error(common::LogDomain::Server, "epoll wait failed")
             .field("fd", epoll_.fd())
             .field("errno", err, common::errno_message(err))
             .field("decision", "stop_loop");
@@ -131,7 +131,10 @@ bool HttpMainReactor::wait_and_process_events(const std::function<void()>& on_li
             continue;
         }
 
-        common::Logger::instance().debug("unknown main event").field("fd", fd).field("events", event.events);
+        common::Logger::instance()
+            .debug(common::LogDomain::Server, "unknown main event")
+            .field("fd", fd)
+            .field("events", event.events);
     }
 
     return true;
@@ -146,7 +149,7 @@ bool HttpMainReactor::close_listener_for_shutdown() {
     if (!epoll_.del(listener_fd)) {
         const int err = errno;
         common::Logger::instance()
-            .warn("epoll del listener failed")
+            .warn(common::LogDomain::Server, "epoll del listener failed")
             .field("fd", listener_fd)
             .field("errno", err, common::errno_message(err))
             .field("decision", "continue_shutdown");
@@ -154,7 +157,7 @@ bool HttpMainReactor::close_listener_for_shutdown() {
 
     listener_.close();
     common::Logger::instance()
-        .info("listener closed for shutdown")
+        .info(common::LogDomain::Server, "listener closed for shutdown")
         .field("fd", listener_fd)
         .field("next_state", "draining");
     return true;
@@ -169,7 +172,7 @@ void HttpMainReactor::notify_wakeup() {
     const int err = net::notify_eventfd(wakeup_fd_);
     if (err != 0) {
         common::Logger::instance()
-            .warn("notify wakeup failed")
+            .warn(common::LogDomain::Server, "notify wakeup failed")
             .field("fd", wakeup_fd_)
             .field("errno", err, common::errno_message(err))
             .field("decision", "keep_running");
@@ -192,7 +195,7 @@ void HttpMainReactor::drain_wakeup(int wakeup_fd) {
     const int err = net::drain_eventfd(wakeup_fd);
     if (err != 0) {
         common::Logger::instance()
-            .warn("drain wakeup failed")
+            .warn(common::LogDomain::Server, "drain wakeup failed")
             .field("fd", wakeup_fd)
             .field("errno", err, common::errno_message(err))
             .field("decision", "keep_running");
