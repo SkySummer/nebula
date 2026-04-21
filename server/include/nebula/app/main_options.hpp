@@ -1,11 +1,11 @@
-#ifndef NEBULA_SERVER_MAIN_OPTIONS_HPP
-#define NEBULA_SERVER_MAIN_OPTIONS_HPP
+#ifndef NEBULA_APP_MAIN_OPTIONS_HPP
+#define NEBULA_APP_MAIN_OPTIONS_HPP
 
 #include <filesystem>
 #include <span>
 #include <string>
 
-namespace nebula::server {
+namespace nebula::app {
 
 struct MainOptions {
     std::filesystem::path config_path;
@@ -20,6 +20,6 @@ struct MainOptionsParseResult {
 
 MainOptionsParseResult parse_main_options(std::span<char*> args);
 
-}  // namespace nebula::server
+}  // namespace nebula::app
 
-#endif  // NEBULA_SERVER_MAIN_OPTIONS_HPP
+#endif  // NEBULA_APP_MAIN_OPTIONS_HPP

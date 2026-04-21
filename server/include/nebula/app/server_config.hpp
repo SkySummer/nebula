@@ -1,5 +1,5 @@
-#ifndef NEBULA_SERVER_SERVER_CONFIG_HPP
-#define NEBULA_SERVER_SERVER_CONFIG_HPP
+#ifndef NEBULA_APP_SERVER_CONFIG_HPP
+#define NEBULA_APP_SERVER_CONFIG_HPP
 
 #include <chrono>
 #include <cstddef>
@@ -11,7 +11,7 @@
 #include "nebula/auth/password_hash_limits.hpp"
 #include "nebula/common/logger.hpp"
 
-namespace nebula::server {
+namespace nebula::app {
 
 std::size_t default_worker_thread_count();
 std::size_t default_sub_reactor_count();
@@ -79,6 +79,6 @@ struct ServerConfigLoadResult {
     explicit ServerConfigLoadResult(const std::filesystem::path& path);
 };
 
-}  // namespace nebula::server
+}  // namespace nebula::app
 
-#endif  // NEBULA_SERVER_SERVER_CONFIG_HPP
+#endif  // NEBULA_APP_SERVER_CONFIG_HPP

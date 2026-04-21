@@ -29,6 +29,7 @@ enum class LogLevel : std::uint8_t {
 [[nodiscard]] std::string_view to_string(LogLevel level) noexcept;
 
 enum class LogDomain : std::uint8_t {
+    App,
     Auth,
     Common,
     Http,

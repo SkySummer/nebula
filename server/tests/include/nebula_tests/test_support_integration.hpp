@@ -3,6 +3,7 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -15,7 +16,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "nebula/server/http_server.hpp"
+#include "nebula/common/postgres_connection_pool.hpp"
+#include "nebula/server/server_builder.hpp"
 #include "nebula_tests/test_support.hpp"
 
 namespace nebula::testsupport::integration {
@@ -29,10 +31,22 @@ inline sockaddr* as_sockaddr(sockaddr_in& addr) {
 
 }  // namespace detail
 
-inline nebula::server::HttpServerRuntime build_runtime(
-    nebula::server::ServerConfig config, std::shared_ptr<nebula::http::Router> router,
-    std::shared_ptr<nebula::auth::AuthService> auth_service = nullptr) {
-    return nebula::server::HttpServerBuilder()
+inline constexpr std::string_view kIntegrationJwtSecret = "integration_auth_secret_0123456789abcdef";
+
+inline void apply_database_config(nebula::app::ServerConfig& config,
+                                  const nebula::common::PostgresConnectionPoolOptions& db_config) {
+    config.database_host = db_config.host;
+    config.database_port = db_config.port;
+    config.database_name = db_config.database;
+    config.database_user = db_config.user;
+    ::setenv("NEBULA_TEST_DATABASE_PASSWORD_RUNTIME", db_config.password.c_str(), 1);
+    config.database_password_env = "NEBULA_TEST_DATABASE_PASSWORD_RUNTIME";
+}
+
+inline nebula::server::ServerRuntime build_runtime(nebula::app::ServerConfig config,
+                                                   std::shared_ptr<nebula::http::Router> router,
+                                                   std::shared_ptr<nebula::auth::AuthService> auth_service = nullptr) {
+    return nebula::server::ServerBuilder()
         .with_config(std::move(config))
         .with_router(std::move(router))
         .with_auth_service(std::move(auth_service))
@@ -94,7 +108,7 @@ inline std::string read_until_close(int fd) {
     }
 }
 
-inline void wait_until_server_ready(nebula::server::HttpServerRuntime& server) {
+inline void wait_until_server_ready(nebula::server::ServerRuntime& server) {
     using namespace std::chrono_literals;
 
     for (int idx = 0; idx < 200; ++idx) {
@@ -109,8 +123,7 @@ inline void wait_until_server_ready(nebula::server::HttpServerRuntime& server) {
 
 class ServerThreadGuard {
 public:
-    ServerThreadGuard(nebula::server::HttpServerRuntime& server, std::thread& thread)
-        : server_(server), thread_(thread) {}
+    ServerThreadGuard(nebula::server::ServerRuntime& server, std::thread& thread) : server_(server), thread_(thread) {}
 
     ServerThreadGuard(const ServerThreadGuard&) = delete;
     ServerThreadGuard& operator=(const ServerThreadGuard&) = delete;
@@ -125,7 +138,7 @@ public:
     }
 
 private:
-    nebula::server::HttpServerRuntime& server_;
+    nebula::server::ServerRuntime& server_;
     std::thread& thread_;
 };
 

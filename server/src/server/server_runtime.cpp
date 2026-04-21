@@ -1,4 +1,4 @@
-#include "nebula/server/http_server.hpp"
+#include "nebula/server/server_runtime.hpp"
 
 #include <cerrno>
 #include <chrono>
@@ -12,11 +12,11 @@
 #include "nebula/common/posix_utils.hpp"
 #include "nebula/http/router.hpp"
 #include "nebula/net/address_discovery.hpp"
-#include "nebula/server/http_main_reactor.hpp"
 #include "nebula/server/http_request_dispatcher.hpp"
-#include "nebula/server/http_sub_reactor_pool.hpp"
+#include "nebula/server/main_reactor.hpp"
 #include "nebula/server/reactor_constants.hpp"
 #include "nebula/server/signal_handler.hpp"
+#include "nebula/server/sub_reactor_pool.hpp"
 
 namespace nebula::server {
 
@@ -56,24 +56,24 @@ void log_runtime_exception(const char* event, LifecycleState state, const char* 
 
 }  // namespace
 
-HttpServerRuntime::HttpServerRuntime(ServerConfig config, std::shared_ptr<http::Router> router,
-                                     std::shared_ptr<auth::AuthService> auth_service)
+ServerRuntime::ServerRuntime(app::ServerConfig config, std::shared_ptr<http::Router> router,
+                             std::shared_ptr<auth::AuthService> auth_service)
     : config_(std::move(config).normalize()),
       signal_handler_(config_.manage_signals ? std::make_unique<SignalHandler>() : nullptr),
-      main_reactor_(std::make_unique<HttpMainReactor>()),
+      main_reactor_(std::make_unique<MainReactor>()),
       router_(std::move(router)),
       auth_service_(std::move(auth_service)),
       thread_pool_(config_.worker_thread_count) {
     request_dispatcher_ = std::make_unique<HttpRequestDispatcher>(
         router_, auth_service_, thread_pool_, [this](ReactorResponseTask task) { submit_response(std::move(task)); });
 
-    sub_reactor_pool_ = std::make_unique<HttpSubReactorPool>(
+    sub_reactor_pool_ = std::make_unique<SubReactorPool>(
         config_, [this](ReactorRequestTask task) { dispatch_sub_request(std::move(task)); },
         [this]() { return lifecycle_controller_.state(); }, [this]() { return force_close_requested_.load(); },
         [this](std::size_t reactor_id) { on_sub_reactor_fatal(reactor_id); });
 }
 
-HttpServerRuntime::~HttpServerRuntime() noexcept {
+ServerRuntime::~ServerRuntime() noexcept {
     try {
         request_stop();
         thread_pool_.stop();
@@ -91,7 +91,7 @@ HttpServerRuntime::~HttpServerRuntime() noexcept {
     }
 }
 
-RunResult HttpServerRuntime::run() noexcept {
+RunResult ServerRuntime::run() noexcept {
     LifecycleState expected_state = LifecycleState::Idle;
     bool runtime_initialized = false;
     SignalHandler* active_signal_handler = nullptr;
@@ -207,7 +207,7 @@ RunResult HttpServerRuntime::run() noexcept {
     }
 }
 
-void HttpServerRuntime::request_stop() noexcept {
+void ServerRuntime::request_stop() noexcept {
     try {
         const StopRequestTransition transition = lifecycle_controller_.request_stop();
         if (transition.decision != StopRequestDecision::Ignored) {
@@ -231,15 +231,15 @@ void HttpServerRuntime::request_stop() noexcept {
     }
 }
 
-bool HttpServerRuntime::is_running() const noexcept {
+bool ServerRuntime::is_running() const noexcept {
     return lifecycle_controller_.state() == LifecycleState::Running;
 }
 
-std::uint16_t HttpServerRuntime::listening_port() const noexcept {
+std::uint16_t ServerRuntime::listening_port() const noexcept {
     return listening_port_.load();
 }
 
-bool HttpServerRuntime::init_runtime() {
+bool ServerRuntime::init_runtime() {
     force_close_requested_.store(false);
     sub_reactor_fatal_error_.store(false);
 
@@ -271,7 +271,7 @@ bool HttpServerRuntime::init_runtime() {
     return true;
 }
 
-void HttpServerRuntime::shutdown_runtime() {
+void ServerRuntime::shutdown_runtime() {
     disable_response_submission();
     force_close_requested_.store(true);
 
@@ -288,7 +288,7 @@ void HttpServerRuntime::shutdown_runtime() {
     sub_reactor_fatal_error_.store(false);
 }
 
-RunResult HttpServerRuntime::run_event_loop() {
+RunResult ServerRuntime::run_event_loop() {
     response_submission_enabled_.store(true);
     force_close_requested_.store(false);
 
@@ -341,7 +341,7 @@ RunResult HttpServerRuntime::run_event_loop() {
     return shutdown.result;
 }
 
-int HttpServerRuntime::compute_wait_timeout_ms(const ShutdownMachine& shutdown) {
+int ServerRuntime::compute_wait_timeout_ms(const ShutdownMachine& shutdown) {
     if (shutdown.state != ShutdownState::Draining) {
         return kEventWaitTimeoutMs;
     }
@@ -361,7 +361,7 @@ int HttpServerRuntime::compute_wait_timeout_ms(const ShutdownMachine& shutdown) 
     return static_cast<int>(remaining_ms);
 }
 
-void HttpServerRuntime::enter_shutdown_draining(ShutdownMachine& shutdown) {
+void ServerRuntime::enter_shutdown_draining(ShutdownMachine& shutdown) {
     close_listener_for_shutdown(shutdown);
     notify_sub_reactors();
 
@@ -380,7 +380,7 @@ void HttpServerRuntime::enter_shutdown_draining(ShutdownMachine& shutdown) {
         .field("next_state", "draining");
 }
 
-bool HttpServerRuntime::advance_shutdown_machine(ShutdownMachine& shutdown) {
+bool ServerRuntime::advance_shutdown_machine(ShutdownMachine& shutdown) {
     if (shutdown.state == ShutdownState::Serving || shutdown.state == ShutdownState::Completed) {
         return shutdown.state == ShutdownState::Completed;
     }
@@ -417,7 +417,7 @@ bool HttpServerRuntime::advance_shutdown_machine(ShutdownMachine& shutdown) {
     return true;
 }
 
-void HttpServerRuntime::close_listener_for_shutdown(ShutdownMachine& shutdown) {
+void ServerRuntime::close_listener_for_shutdown(ShutdownMachine& shutdown) {
     if (shutdown.listener_closed) {
         return;
     }
@@ -432,7 +432,7 @@ void HttpServerRuntime::close_listener_for_shutdown(ShutdownMachine& shutdown) {
     }
 }
 
-bool HttpServerRuntime::collect_drain_status(std::size_t& connection_count, std::size_t& pending_count) const {
+bool ServerRuntime::collect_drain_status(std::size_t& connection_count, std::size_t& pending_count) const {
     connection_count = 0;
     pending_count = 0;
     if (sub_reactor_pool_ == nullptr) {
@@ -441,7 +441,7 @@ bool HttpServerRuntime::collect_drain_status(std::size_t& connection_count, std:
     return sub_reactor_pool_->all_drained(connection_count, pending_count);
 }
 
-void HttpServerRuntime::accept_new_connections() {
+void ServerRuntime::accept_new_connections() {
     while (lifecycle_controller_.state() == LifecycleState::Running) {
         if (main_reactor_ == nullptr) {
             common::Logger::instance()
@@ -496,7 +496,7 @@ void HttpServerRuntime::accept_new_connections() {
     }
 }
 
-void HttpServerRuntime::dispatch_sub_request(ReactorRequestTask task) {
+void ServerRuntime::dispatch_sub_request(ReactorRequestTask task) {
     if (request_dispatcher_ == nullptr) {
         common::Logger::instance()
             .error(common::LogDomain::Server, "dispatch request failed")
@@ -511,7 +511,7 @@ void HttpServerRuntime::dispatch_sub_request(ReactorRequestTask task) {
     request_dispatcher_->dispatch(std::move(task));
 }
 
-void HttpServerRuntime::submit_response(ReactorResponseTask task) {
+void ServerRuntime::submit_response(ReactorResponseTask task) {
     const LifecycleState state = lifecycle_controller_.state();
     if (!can_submit_response_for_state(state)) {
         common::Logger::instance()
@@ -547,30 +547,30 @@ void HttpServerRuntime::submit_response(ReactorResponseTask task) {
     sub_reactor_pool_->enqueue_response(std::move(task));
 }
 
-void HttpServerRuntime::notify_main_wakeup() {
+void ServerRuntime::notify_main_wakeup() {
     if (main_reactor_ != nullptr) {
         main_reactor_->notify_wakeup();
     }
 }
 
-void HttpServerRuntime::notify_sub_reactors() noexcept {
+void ServerRuntime::notify_sub_reactors() noexcept {
     if (sub_reactor_pool_ != nullptr) {
         sub_reactor_pool_->notify_all();
     }
 }
 
-void HttpServerRuntime::disable_response_submission() noexcept {
+void ServerRuntime::disable_response_submission() noexcept {
     response_submission_enabled_.store(false);
 }
 
-bool HttpServerRuntime::can_submit_response_for_state(LifecycleState state) const noexcept {
+bool ServerRuntime::can_submit_response_for_state(LifecycleState state) const noexcept {
     if (!response_submission_enabled_.load()) {
         return false;
     }
     return state == LifecycleState::Running || state == LifecycleState::Stopping;
 }
 
-void HttpServerRuntime::on_sub_reactor_fatal(std::size_t reactor_id) {
+void ServerRuntime::on_sub_reactor_fatal(std::size_t reactor_id) {
     sub_reactor_fatal_error_.store(true);
     common::Logger::instance()
         .error(common::LogDomain::Server, "sub reactor fatal")

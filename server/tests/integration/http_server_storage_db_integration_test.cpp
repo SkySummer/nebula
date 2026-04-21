@@ -1,5 +1,3 @@
-#include "nebula/server/http_server.hpp"
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -43,22 +41,14 @@ using nebula::testsupport::expect_true;
 using nebula::testsupport::TempDir;
 using nebula::testsupport::write_jwt_secret_file;
 using nebula::testsupport::database::require_postgres_pool_test_options;
+using nebula::testsupport::integration::apply_database_config;
 using nebula::testsupport::integration::build_runtime;
 using nebula::testsupport::integration::connect_localhost;
+using nebula::testsupport::integration::kIntegrationJwtSecret;
 using nebula::testsupport::integration::read_until_close;
 using nebula::testsupport::integration::send_all;
 using nebula::testsupport::integration::ServerThreadGuard;
 using nebula::testsupport::integration::wait_until_server_ready;
-
-constexpr std::string_view kIntegrationJwtSecret = "integration_storage_secret_0123456789abcdef";
-void apply_database_config(nebula::server::ServerConfig& config, const PostgresConnectionPoolOptions& db_config) {
-    config.database_host = db_config.host;
-    config.database_port = db_config.port;
-    config.database_name = db_config.database;
-    config.database_user = db_config.user;
-    ::setenv("NEBULA_TEST_DATABASE_PASSWORD_RUNTIME", db_config.password.c_str(), 1);
-    config.database_password_env = "NEBULA_TEST_DATABASE_PASSWORD_RUNTIME";
-}
 
 void truncate_storage_tables(const PostgresConnectionPoolOptions& config) {
     pqxx::connection connection(nebula::common::build_connection_info(config));
@@ -74,7 +64,7 @@ struct StorageRouteRuntime {
     std::shared_ptr<nebula::auth::AuthService> auth_service;
 };
 
-void ensure_database_pool_initialized(const nebula::server::ServerConfig& config) {
+void ensure_database_pool_initialized(const nebula::app::ServerConfig& config) {
     const std::optional<std::string> password = nebula::common::resolve_database_password(config.database_password_env);
     expect_true(password.has_value(), "database password should be available");
     if (!password.has_value()) {
@@ -97,7 +87,7 @@ void ensure_database_pool_initialized(const nebula::server::ServerConfig& config
                 "database pool initialization should succeed");
 }
 
-StorageRouteRuntime build_storage_router(const nebula::server::ServerConfig& config) {
+StorageRouteRuntime build_storage_router(const nebula::app::ServerConfig& config) {
     StorageRouteRuntime runtime;
     runtime.router = std::make_shared<nebula::http::Router>();
     ensure_database_pool_initialized(config);
@@ -307,7 +297,7 @@ std::string upload_file_single_chunk(std::uint16_t port, std::string_view path, 
 void test_storage_node_schema_constraints() {
     const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     apply_database_config(config, db_config);
     ensure_database_pool_initialized(config);
     expect_true(nebula::storage::check_storage_schema_ready(),
@@ -379,7 +369,7 @@ void test_storage_requires_access_token() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -409,7 +399,7 @@ void test_storage_rejects_non_canonical_user_paths() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -465,7 +455,7 @@ void test_storage_upload_complete_download_flow() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -533,7 +523,7 @@ void test_storage_upload_rejects_chunk_after_expected_count() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -592,7 +582,7 @@ void test_storage_upload_chunk_failure_restores_db_size() {
     const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
     const TempDir files_dir("nebula-storage-upload-restore-files");
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.storage_root_dir = files_dir.path() / "files";
     apply_database_config(config, db_config);
     truncate_storage_tables(db_config);
@@ -669,7 +659,7 @@ void test_storage_ref_count_delete_and_gc() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -738,7 +728,7 @@ void test_storage_gc_cleans_file_only_objects() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -796,7 +786,7 @@ void test_storage_gc_cleans_orphan_temp_files() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -868,7 +858,7 @@ void test_storage_temp_cleanup_waits_for_pending_session_reference() {
     const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
     const TempDir files_dir("nebula-storage-temp-cleanup-race-files");
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     apply_database_config(config, db_config);
     config.storage_root_dir = files_dir.path() / "files";
     truncate_storage_tables(db_config);
@@ -921,7 +911,7 @@ void test_storage_unreferenced_cleanup_avoids_resurrection_race() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -993,7 +983,7 @@ void test_storage_upload_failure_cleanup_waits_for_pending_reference() {
     const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
     const TempDir files_dir("nebula-storage-upload-cleanup-race-files");
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     apply_database_config(config, db_config);
     config.storage_root_dir = files_dir.path() / "files";
     truncate_storage_tables(db_config);
@@ -1049,7 +1039,7 @@ void test_storage_file_only_object_cleanup_waits_for_pending_reference() {
     const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
     const TempDir files_dir("nebula-storage-file-only-cleanup-race-files");
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     apply_database_config(config, db_config);
     config.storage_root_dir = files_dir.path() / "files";
     truncate_storage_tables(db_config);
@@ -1111,7 +1101,7 @@ void test_storage_tree_and_directory_delete() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -1175,7 +1165,7 @@ void test_storage_explicit_directory_contracts() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -1276,7 +1266,7 @@ void test_storage_rejects_file_directory_path_collisions() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 4;
     config.auth_jwt_secret_path = secret_path;
@@ -1352,7 +1342,7 @@ void test_storage_rejects_files_above_size_limit() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.storage_max_file_bytes = 5;
@@ -1434,7 +1424,7 @@ void test_storage_prefix_wildcards_match_literals() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -1495,7 +1485,7 @@ void test_storage_isolated_between_users() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;

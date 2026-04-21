@@ -1,5 +1,3 @@
-#include "nebula/server/http_server.hpp"
-
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -32,23 +30,14 @@ using nebula::testsupport::expect_true;
 using nebula::testsupport::write_jwt_secret_file;
 using nebula::testsupport::database::require_postgres_pool_test_options;
 using nebula::testsupport::database::validate_database_test_env;
+using nebula::testsupport::integration::apply_database_config;
 using nebula::testsupport::integration::build_runtime;
 using nebula::testsupport::integration::connect_localhost;
+using nebula::testsupport::integration::kIntegrationJwtSecret;
 using nebula::testsupport::integration::read_until_close;
 using nebula::testsupport::integration::send_all;
 using nebula::testsupport::integration::ServerThreadGuard;
 using nebula::testsupport::integration::wait_until_server_ready;
-
-constexpr std::string_view kIntegrationJwtSecret = "integration_auth_secret_0123456789abcdef";
-
-void apply_database_config(nebula::server::ServerConfig& config, const PostgresConnectionPoolOptions& db_config) {
-    config.database_host = db_config.host;
-    config.database_port = db_config.port;
-    config.database_name = db_config.database;
-    config.database_user = db_config.user;
-    ::setenv("NEBULA_TEST_DATABASE_PASSWORD_RUNTIME", db_config.password.c_str(), 1);
-    config.database_password_env = "NEBULA_TEST_DATABASE_PASSWORD_RUNTIME";
-}
 
 void truncate_users_table(const PostgresConnectionPoolOptions& config) {
     pqxx::connection connection(nebula::common::build_connection_info(config));
@@ -63,7 +52,7 @@ struct AuthRouteRuntime {
     std::shared_ptr<nebula::auth::AuthService> auth_service;
 };
 
-void ensure_database_pool_initialized(const nebula::server::ServerConfig& config) {
+void ensure_database_pool_initialized(const nebula::app::ServerConfig& config) {
     const std::optional<std::string> password = nebula::common::resolve_database_password(config.database_password_env);
     expect_true(password.has_value(), "database password should be available");
     if (!password.has_value()) {
@@ -86,7 +75,7 @@ void ensure_database_pool_initialized(const nebula::server::ServerConfig& config
                 "database pool initialization should succeed");
 }
 
-AuthRouteRuntime build_auth_router(const nebula::server::ServerConfig& config) {
+AuthRouteRuntime build_auth_router(const nebula::app::ServerConfig& config) {
     AuthRouteRuntime runtime;
     runtime.router = std::make_shared<nebula::http::Router>();
     ensure_database_pool_initialized(config);
@@ -169,7 +158,7 @@ void test_auth_register_login_me_flow() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -219,7 +208,7 @@ void test_auth_register_duplicate_returns_conflict() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -250,7 +239,7 @@ void test_auth_login_invalid_password_returns_unauthorized() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -284,7 +273,7 @@ void test_auth_me_missing_token_returns_unauthorized() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -312,7 +301,7 @@ void test_auth_me_expired_token_returns_unauthorized() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;

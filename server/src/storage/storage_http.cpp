@@ -1081,7 +1081,7 @@ http::HttpResponse handle_gc(const std::shared_ptr<StorageRouteConfig>& route_co
 
 }  // namespace
 
-bool register_storage_routes(const server::ServerConfig& config, const std::shared_ptr<http::Router>& router) {
+bool register_storage_routes(const app::ServerConfig& config, const std::shared_ptr<http::Router>& router) {
     if (router == nullptr) {
         return false;
     }

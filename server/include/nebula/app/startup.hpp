@@ -1,13 +1,13 @@
-#ifndef NEBULA_SERVER_STARTUP_HPP
-#define NEBULA_SERVER_STARTUP_HPP
+#ifndef NEBULA_APP_STARTUP_HPP
+#define NEBULA_APP_STARTUP_HPP
 
 #include <filesystem>
 #include <span>
 #include <string>
 
-#include "nebula/server/server_config.hpp"
+#include "nebula/app/server_config.hpp"
 
-namespace nebula::server {
+namespace nebula::app {
 
 struct StartupResult {
     bool ok = false;
@@ -20,6 +20,6 @@ struct StartupResult {
     explicit StartupResult(std::span<char*> args);
 };
 
-}  // namespace nebula::server
+}  // namespace nebula::app
 
-#endif  // NEBULA_SERVER_STARTUP_HPP
+#endif  // NEBULA_APP_STARTUP_HPP

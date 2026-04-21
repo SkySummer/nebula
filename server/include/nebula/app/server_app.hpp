@@ -1,14 +1,14 @@
-#ifndef NEBULA_SERVER_SERVER_APP_HPP
-#define NEBULA_SERVER_SERVER_APP_HPP
+#ifndef NEBULA_APP_SERVER_APP_HPP
+#define NEBULA_APP_SERVER_APP_HPP
 
 #include <memory>
 #include <span>
 
+#include "nebula/app/startup.hpp"
 #include "nebula/auth/auth_service.hpp"
 #include "nebula/http/router.hpp"
-#include "nebula/server/startup.hpp"
 
-namespace nebula::server {
+namespace nebula::app {
 
 class ServerApp {
 public:
@@ -29,6 +29,6 @@ private:
     bool storage_routes_registered_ = false;
 };
 
-}  // namespace nebula::server
+}  // namespace nebula::app
 
-#endif  // NEBULA_SERVER_SERVER_APP_HPP
+#endif  // NEBULA_APP_SERVER_APP_HPP

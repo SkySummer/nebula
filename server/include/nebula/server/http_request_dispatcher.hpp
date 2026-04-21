@@ -8,16 +8,16 @@
 #include "nebula/common/thread_pool.hpp"
 #include "nebula/http/http_types.hpp"
 #include "nebula/http/router.hpp"
-#include "nebula/server/http_reactor_tasks.hpp"
+#include "nebula/server/reactor_tasks.hpp"
 
 namespace nebula::server {
 
 class HttpRequestDispatcher {
 public:
-    using SubmitResponseFn = std::function<void(ReactorResponseTask task)>;
+    using ResponseSubmitter = std::function<void(ReactorResponseTask task)>;
 
     HttpRequestDispatcher(std::shared_ptr<http::Router> router, std::shared_ptr<auth::AuthService> auth_service,
-                          common::ThreadPool& thread_pool, SubmitResponseFn submit_response);
+                          common::ThreadPool& thread_pool, ResponseSubmitter response_submitter);
 
     void dispatch(ReactorRequestTask task);
 
@@ -28,7 +28,7 @@ private:
     std::shared_ptr<http::Router> router_;
     std::shared_ptr<auth::AuthService> auth_service_;
     common::ThreadPool* thread_pool_ = nullptr;
-    SubmitResponseFn submit_response_;
+    ResponseSubmitter response_submitter_;
 };
 
 }  // namespace nebula::server

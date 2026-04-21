@@ -1,5 +1,5 @@
-#ifndef NEBULA_SERVER_HTTP_MAIN_REACTOR_HPP
-#define NEBULA_SERVER_HTTP_MAIN_REACTOR_HPP
+#ifndef NEBULA_SERVER_MAIN_REACTOR_HPP
+#define NEBULA_SERVER_MAIN_REACTOR_HPP
 
 #include <cstdint>
 #include <functional>
@@ -11,15 +11,15 @@
 
 namespace nebula::server {
 
-class HttpMainReactor {
+class MainReactor {
 public:
-    HttpMainReactor();
-    ~HttpMainReactor() noexcept;
+    MainReactor();
+    ~MainReactor() noexcept;
 
-    HttpMainReactor(const HttpMainReactor&) = delete;
-    HttpMainReactor& operator=(const HttpMainReactor&) = delete;
-    HttpMainReactor(HttpMainReactor&&) = delete;
-    HttpMainReactor& operator=(HttpMainReactor&&) = delete;
+    MainReactor(const MainReactor&) = delete;
+    MainReactor& operator=(const MainReactor&) = delete;
+    MainReactor(MainReactor&&) = delete;
+    MainReactor& operator=(MainReactor&&) = delete;
 
     bool open(std::uint16_t port, int backlog);
     void close() noexcept;
@@ -46,4 +46,4 @@ private:
 
 }  // namespace nebula::server
 
-#endif  // NEBULA_SERVER_HTTP_MAIN_REACTOR_HPP
+#endif  // NEBULA_SERVER_MAIN_REACTOR_HPP

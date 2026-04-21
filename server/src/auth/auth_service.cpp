@@ -5,11 +5,11 @@
 #include <optional>
 #include <utility>
 
+#include "nebula/app/server_config.hpp"
 #include "nebula/auth/jwt_secret_store.hpp"
 #include "nebula/auth/user_repository.hpp"
 #include "nebula/common/logger.hpp"
 #include "nebula/common/time_utils.hpp"
-#include "nebula/server/server_config.hpp"
 
 namespace nebula::auth {
 
@@ -205,7 +205,7 @@ bool AuthService::is_valid_password(std::string_view password) {
     return password.size() >= 8U && password.size() <= 72U;
 }
 
-std::shared_ptr<AuthService> initialize_auth_service(const server::ServerConfig& config) {
+std::shared_ptr<AuthService> initialize_auth_service(const app::ServerConfig& config) {
     const std::optional<std::string> jwt_secret = load_or_create_jwt_secret(config.auth_jwt_secret_path);
     if (!jwt_secret.has_value()) {
         common::Logger::instance()

@@ -1,10 +1,10 @@
-#include "nebula/server/startup.hpp"
+#include "nebula/app/startup.hpp"
 
 #include <format>
 
-#include "nebula/server/main_options.hpp"
+#include "nebula/app/main_options.hpp"
 
-namespace nebula::server {
+namespace nebula::app {
 
 StartupResult::StartupResult(std::span<char*> args) {
     const MainOptionsParseResult options_result = parse_main_options(args);
@@ -38,4 +38,4 @@ StartupResult::StartupResult(std::span<char*> args) {
     ok = true;
 }
 
-}  // namespace nebula::server
+}  // namespace nebula::app

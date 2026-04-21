@@ -39,11 +39,11 @@ http::AuthenticatedUser to_authenticated_user(const auth::AuthenticateResult& au
 
 HttpRequestDispatcher::HttpRequestDispatcher(std::shared_ptr<http::Router> router,
                                              std::shared_ptr<auth::AuthService> auth_service,
-                                             common::ThreadPool& thread_pool, SubmitResponseFn submit_response)
+                                             common::ThreadPool& thread_pool, ResponseSubmitter response_submitter)
     : router_(std::move(router)),
       auth_service_(std::move(auth_service)),
       thread_pool_(&thread_pool),
-      submit_response_(std::move(submit_response)) {}
+      response_submitter_(std::move(response_submitter)) {}
 
 void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
     if (thread_pool_ == nullptr) {
@@ -53,10 +53,10 @@ void HttpRequestDispatcher::dispatch(ReactorRequestTask task) {
     thread_pool_->submit([this, task = std::move(task)]() mutable {
         try {
             http::HttpResponse response = dispatch_request(std::move(task.request));
-            if (!submit_response_) {
+            if (!response_submitter_) {
                 throw std::runtime_error("response submit callback missing");
             }
-            submit_response_(ReactorResponseTask{
+            response_submitter_(ReactorResponseTask{
                 .reactor_id = task.reactor_id,
                 .fd = task.fd,
                 .connection_token = task.connection_token,
@@ -171,11 +171,11 @@ http::HttpResponse HttpRequestDispatcher::dispatch_request(http::HttpRequest req
 }
 
 void HttpRequestDispatcher::submit_error_response(ReactorRequestTask task) {
-    if (!submit_response_) {
+    if (!response_submitter_) {
         throw std::runtime_error("response submit callback missing");
     }
 
-    submit_response_(ReactorResponseTask{
+    response_submitter_(ReactorResponseTask{
         .reactor_id = task.reactor_id,
         .fd = task.fd,
         .connection_token = task.connection_token,

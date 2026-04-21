@@ -1,4 +1,4 @@
-#include "nebula/server/startup.hpp"
+#include "nebula/app/startup.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -9,9 +9,9 @@
 
 namespace {
 
-using nebula::server::ServerConfig;
-using nebula::server::ServerConfigSource;
-using nebula::server::StartupResult;
+using nebula::app::ServerConfig;
+using nebula::app::ServerConfigSource;
+using nebula::app::StartupResult;
 using nebula::testsupport::ArgvBuilder;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_equal;

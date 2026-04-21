@@ -1,4 +1,4 @@
-#include "nebula/config/toml_parser.hpp"
+#include "nebula/common/toml_parser.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -8,7 +8,7 @@
 
 #include "nebula/common/string_utils.hpp"
 
-namespace nebula::config {
+namespace nebula::common {
 
 namespace {
 
@@ -285,4 +285,4 @@ TomlParseResult parse_toml(std::string_view text) {
     return result;
 }
 
-}  // namespace nebula::config
+}  // namespace nebula::common

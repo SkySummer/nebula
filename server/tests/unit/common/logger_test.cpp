@@ -81,6 +81,7 @@ void test_to_string_covers_levels() {
 }
 
 void test_to_string_covers_domains() {
+    expect_equal(std::string(nebula::common::to_string(LogDomain::App)), std::string("app"), "app text");
     expect_equal(std::string(nebula::common::to_string(LogDomain::Auth)), std::string("auth"), "auth text");
     expect_equal(std::string(nebula::common::to_string(LogDomain::Common)), std::string("common"), "common text");
     expect_equal(std::string(nebula::common::to_string(LogDomain::Http)), std::string("http"), "http text");

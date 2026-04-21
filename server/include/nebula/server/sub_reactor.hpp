@@ -1,10 +1,11 @@
-#ifndef NEBULA_SERVER_HTTP_SUB_REACTOR_HPP
-#define NEBULA_SERVER_HTTP_SUB_REACTOR_HPP
+#ifndef NEBULA_SERVER_SUB_REACTOR_HPP
+#define NEBULA_SERVER_SUB_REACTOR_HPP
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -13,17 +14,16 @@
 #include <unordered_map>
 #include <vector>
 
+#include "nebula/app/server_config.hpp"
 #include "nebula/http/http_parser.hpp"
 #include "nebula/http/http_types.hpp"
 #include "nebula/net/epoll_loop.hpp"
-#include "nebula/server/http_reactor_tasks.hpp"
-#include "nebula/server/http_sub_reactor_callbacks.hpp"
-#include "nebula/server/server_config.hpp"
+#include "nebula/server/reactor_tasks.hpp"
 #include "nebula/server/server_lifecycle_state.hpp"
 
 namespace nebula::server {
 
-class HttpSubReactor {
+class SubReactor {
 public:
     struct AcceptedConnection {
         int fd = -1;
@@ -31,26 +31,27 @@ public:
         std::string peer;
     };
 
-    using RequestDispatchFn = SubReactorRequestDispatchFn;
-    using LifecycleProviderFn = SubReactorLifecycleProviderFn;
-    using ForceCloseProviderFn = SubReactorForceCloseProviderFn;
-    using FatalErrorFn = SubReactorFatalErrorFn;
+    using RequestDispatcher = std::function<void(ReactorRequestTask task)>;
+    using LifecycleProvider = std::function<LifecycleState()>;
+    using ForceCloseChecker = std::function<bool()>;
+    using FatalErrorHandler = std::function<void(std::size_t reactor_id)>;
 
-    HttpSubReactor(std::size_t id, const ServerConfig& config, RequestDispatchFn dispatch_request,
-                   LifecycleProviderFn lifecycle_provider, ForceCloseProviderFn force_close_provider,
-                   FatalErrorFn fatal_error_callback);
-    ~HttpSubReactor() noexcept;
+    SubReactor(std::size_t id, const app::ServerConfig& config, RequestDispatcher request_dispatcher,
+               LifecycleProvider lifecycle_provider, ForceCloseChecker force_close_checker,
+               FatalErrorHandler fatal_error_handler);
+    ~SubReactor() noexcept;
 
-    HttpSubReactor(const HttpSubReactor&) = delete;
-    HttpSubReactor& operator=(const HttpSubReactor&) = delete;
-    HttpSubReactor(HttpSubReactor&&) = delete;
-    HttpSubReactor& operator=(HttpSubReactor&&) = delete;
+    SubReactor(const SubReactor&) = delete;
+    SubReactor& operator=(const SubReactor&) = delete;
+    SubReactor(SubReactor&&) = delete;
+    SubReactor& operator=(SubReactor&&) = delete;
 
     bool start();
     std::size_t shutdown();
 
     void request_stop();
     void notify_wakeup();
+
     [[nodiscard]] bool enqueue_accept(AcceptedConnection accepted);
     [[nodiscard]] bool enqueue_response(ReactorResponseTask response);
 
@@ -130,11 +131,11 @@ private:
     void sweep_idle_connections();
 
     std::size_t id_ = 0;
-    const ServerConfig& config_;
-    RequestDispatchFn dispatch_request_;
-    LifecycleProviderFn lifecycle_provider_;
-    ForceCloseProviderFn force_close_provider_;
-    FatalErrorFn fatal_error_callback_;
+    const app::ServerConfig& config_;
+    RequestDispatcher request_dispatcher_;
+    LifecycleProvider lifecycle_provider_;
+    ForceCloseChecker force_close_checker_;
+    FatalErrorHandler fatal_error_handler_;
 
     net::EpollLoop epoll_;
     std::vector<epoll_event> events_;
@@ -159,4 +160,4 @@ private:
 
 }  // namespace nebula::server
 
-#endif  // NEBULA_SERVER_HTTP_SUB_REACTOR_HPP
+#endif  // NEBULA_SERVER_SUB_REACTOR_HPP

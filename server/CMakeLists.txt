@@ -56,6 +56,11 @@ if (BUILD_TESTING)
     add_nebula_test(http_server_auth_db_integration_test integration/http_server_auth_db_integration_test.cpp)
     add_nebula_test(http_server_storage_db_integration_test integration/http_server_storage_db_integration_test.cpp)
 
+    add_nebula_test(main_options_test unit/app/main_options_test.cpp)
+    add_nebula_test(server_app_test unit/app/server_app_test.cpp)
+    add_nebula_test(server_config_test unit/app/server_config_test.cpp)
+    add_nebula_test(startup_test unit/app/startup_test.cpp)
+
     add_nebula_test(auth_service_test unit/auth/auth_service_test.cpp)
     add_nebula_test(jwt_secret_store_test unit/auth/jwt_secret_store_test.cpp)
     add_nebula_test(jwt_service_test unit/auth/jwt_service_test.cpp)
@@ -68,8 +73,7 @@ if (BUILD_TESTING)
     add_nebula_test(logger_test unit/common/logger_test.cpp)
     add_nebula_test(postgres_connection_pool_test unit/common/postgres_connection_pool_test.cpp)
     add_nebula_test(string_utils_test unit/common/string_utils_test.cpp)
-
-    add_nebula_test(toml_parser_test unit/config/toml_parser_test.cpp)
+    add_nebula_test(toml_parser_test unit/common/toml_parser_test.cpp)
 
     add_nebula_test(api_response_contract_test unit/http/api_response_contract_test.cpp)
     add_nebula_test(http_parser_test unit/http/http_parser_test.cpp)
@@ -77,11 +81,6 @@ if (BUILD_TESTING)
     add_nebula_test(router_test unit/http/router_test.cpp)
 
     add_nebula_test(eventfd_utils_test unit/net/eventfd_utils_test.cpp)
-
-    add_nebula_test(main_options_test unit/server/main_options_test.cpp)
-    add_nebula_test(server_app_test unit/server/server_app_test.cpp)
-    add_nebula_test(server_config_loader_test unit/server/server_config_loader_test.cpp)
-    add_nebula_test(startup_test unit/server/startup_test.cpp)
 
     add_nebula_test(storage_types_test unit/storage/storage_types_test.cpp)
     add_nebula_test(storage_utils_test unit/storage/storage_utils_test.cpp)

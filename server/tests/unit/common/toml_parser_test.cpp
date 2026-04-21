@@ -1,4 +1,4 @@
-#include "nebula/config/toml_parser.hpp"
+#include "nebula/common/toml_parser.hpp"
 
 #include <string>
 #include <vector>
@@ -7,8 +7,8 @@
 
 namespace {
 
-using nebula::config::TomlParseResult;
-using nebula::config::TomlValue;
+using nebula::common::TomlParseResult;
+using nebula::common::TomlValue;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
@@ -30,7 +30,7 @@ void test_parse_sections_values_comments() {
         "level = \"Trace\"\n"
         "dir = \"runtime/logs\" # inline comment\n";
 
-    const TomlParseResult parsed = nebula::config::parse_toml(text);
+    const TomlParseResult parsed = nebula::common::parse_toml(text);
     expect_true(parsed.ok, "valid toml should parse");
     expect_equal(parsed.table.size(), static_cast<std::size_t>(4), "table size should match");
 
@@ -49,7 +49,7 @@ void test_parse_sections_values_comments() {
 
 void test_parse_duplicate_key_rejected() {
     const std::string text = "[server]\nport = 1\nport = 2\n";
-    const TomlParseResult parsed = nebula::config::parse_toml(text);
+    const TomlParseResult parsed = nebula::common::parse_toml(text);
 
     expect_true(!parsed.ok, "duplicate key should fail");
     expect_equal(parsed.error_line, static_cast<std::size_t>(3), "duplicate key should report line");
@@ -58,7 +58,7 @@ void test_parse_duplicate_key_rejected() {
 
 void test_parse_invalid_key_rejected() {
     const std::string text = "[server]\nmax.body = 1\n";
-    const TomlParseResult parsed = nebula::config::parse_toml(text);
+    const TomlParseResult parsed = nebula::common::parse_toml(text);
 
     expect_true(!parsed.ok, "invalid key should fail");
     expect_equal(parsed.error_line, static_cast<std::size_t>(2), "invalid key should report line");
@@ -67,7 +67,7 @@ void test_parse_invalid_key_rejected() {
 
 void test_parse_unsupported_value_type_rejected() {
     const std::string text = "[server]\nport = 1.5\n";
-    const TomlParseResult parsed = nebula::config::parse_toml(text);
+    const TomlParseResult parsed = nebula::common::parse_toml(text);
 
     expect_true(!parsed.ok, "unsupported value type should fail");
     expect_equal(parsed.error_line, static_cast<std::size_t>(2), "unsupported value type should report line");
@@ -76,7 +76,7 @@ void test_parse_unsupported_value_type_rejected() {
 
 void test_parse_unterminated_string_rejected() {
     const std::string text = "[logger]\nlevel = \"trace\n";
-    const TomlParseResult parsed = nebula::config::parse_toml(text);
+    const TomlParseResult parsed = nebula::common::parse_toml(text);
 
     expect_true(!parsed.ok, "unterminated string should fail");
     expect_equal(parsed.error_line, static_cast<std::size_t>(2), "unterminated string should report line");

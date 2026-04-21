@@ -1,5 +1,5 @@
-#ifndef NEBULA_SERVER_HTTP_SERVER_HPP
-#define NEBULA_SERVER_HTTP_SERVER_HPP
+#ifndef NEBULA_SERVER_SERVER_RUNTIME_HPP
+#define NEBULA_SERVER_SERVER_RUNTIME_HPP
 
 #include <atomic>
 #include <chrono>
@@ -7,28 +7,30 @@
 #include <cstdint>
 #include <memory>
 
+#include "nebula/app/server_config.hpp"
 #include "nebula/auth/auth_service.hpp"
 #include "nebula/common/thread_pool.hpp"
 #include "nebula/http/router.hpp"
-#include "nebula/server/http_main_reactor.hpp"
-#include "nebula/server/http_reactor_tasks.hpp"
 #include "nebula/server/http_request_dispatcher.hpp"
-#include "nebula/server/http_sub_reactor_pool.hpp"
+#include "nebula/server/main_reactor.hpp"
+#include "nebula/server/reactor_tasks.hpp"
 #include "nebula/server/run_result.hpp"
-#include "nebula/server/server_config.hpp"
 #include "nebula/server/server_lifecycle_controller.hpp"
 #include "nebula/server/signal_handler.hpp"
+#include "nebula/server/sub_reactor_pool.hpp"
 
 namespace nebula::server {
 
-class HttpServerRuntime {
-public:
-    ~HttpServerRuntime() noexcept;
+class ServerBuilder;
 
-    HttpServerRuntime(const HttpServerRuntime&) = delete;
-    HttpServerRuntime& operator=(const HttpServerRuntime&) = delete;
-    HttpServerRuntime(HttpServerRuntime&&) = delete;
-    HttpServerRuntime& operator=(HttpServerRuntime&&) = delete;
+class ServerRuntime {
+public:
+    ~ServerRuntime() noexcept;
+
+    ServerRuntime(const ServerRuntime&) = delete;
+    ServerRuntime& operator=(const ServerRuntime&) = delete;
+    ServerRuntime(ServerRuntime&&) = delete;
+    ServerRuntime& operator=(ServerRuntime&&) = delete;
 
     RunResult run() noexcept;
     void request_stop() noexcept;
@@ -37,10 +39,10 @@ public:
     [[nodiscard]] std::uint16_t listening_port() const noexcept;
 
 private:
-    friend class HttpServerBuilder;
+    friend class ServerBuilder;
 
-    HttpServerRuntime(ServerConfig config, std::shared_ptr<http::Router> router,
-                      std::shared_ptr<auth::AuthService> auth_service);
+    ServerRuntime(app::ServerConfig config, std::shared_ptr<http::Router> router,
+                  std::shared_ptr<auth::AuthService> auth_service);
 
     enum class ShutdownState : std::uint8_t {
         Serving,
@@ -75,10 +77,10 @@ private:
     void disable_response_submission() noexcept;
     [[nodiscard]] bool can_submit_response_for_state(LifecycleState state) const noexcept;
 
-    ServerConfig config_;
+    app::ServerConfig config_;
     std::unique_ptr<SignalHandler> signal_handler_;
-    std::unique_ptr<HttpMainReactor> main_reactor_;
-    std::unique_ptr<HttpSubReactorPool> sub_reactor_pool_;
+    std::unique_ptr<MainReactor> main_reactor_;
+    std::unique_ptr<SubReactorPool> sub_reactor_pool_;
     std::atomic<bool> force_close_requested_ = false;
     std::atomic<bool> sub_reactor_fatal_error_ = false;
 
@@ -93,19 +95,6 @@ private:
     std::atomic<bool> response_submission_enabled_ = false;
 };
 
-class HttpServerBuilder {
-public:
-    HttpServerBuilder& with_config(ServerConfig config);
-    HttpServerBuilder& with_router(std::shared_ptr<http::Router> router);
-    HttpServerBuilder& with_auth_service(std::shared_ptr<auth::AuthService> auth_service);
-    [[nodiscard]] HttpServerRuntime build() const;
-
-private:
-    ServerConfig config_{};
-    std::shared_ptr<http::Router> router_;
-    std::shared_ptr<auth::AuthService> auth_service_;
-};
-
 }  // namespace nebula::server
 
-#endif  // NEBULA_SERVER_HTTP_SERVER_HPP
+#endif  // NEBULA_SERVER_SERVER_RUNTIME_HPP

@@ -1,10 +1,10 @@
-#include "nebula/server/main_options.hpp"
+#include "nebula/app/main_options.hpp"
 
 #include <cstddef>
 #include <format>
 #include <string_view>
 
-namespace nebula::server {
+namespace nebula::app {
 
 MainOptionsParseResult parse_main_options(std::span<char*> args) {
     MainOptionsParseResult result;
@@ -50,4 +50,4 @@ MainOptionsParseResult parse_main_options(std::span<char*> args) {
     return result;
 }
 
-}  // namespace nebula::server
+}  // namespace nebula::app

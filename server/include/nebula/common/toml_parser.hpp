@@ -1,5 +1,5 @@
-#ifndef NEBULA_CONFIG_TOML_PARSER_HPP
-#define NEBULA_CONFIG_TOML_PARSER_HPP
+#ifndef NEBULA_COMMON_TOML_PARSER_HPP
+#define NEBULA_COMMON_TOML_PARSER_HPP
 
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <variant>
 
-namespace nebula::config {
+namespace nebula::common {
 
 struct TomlValue {
     using Value = std::variant<std::string, std::int64_t, bool>;
@@ -26,6 +26,6 @@ struct TomlParseResult {
 
 TomlParseResult parse_toml(std::string_view text);
 
-}  // namespace nebula::config
+}  // namespace nebula::common
 
-#endif  // NEBULA_CONFIG_TOML_PARSER_HPP
+#endif  // NEBULA_COMMON_TOML_PARSER_HPP

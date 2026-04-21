@@ -1,4 +1,4 @@
-#include "nebula/server/server_app.hpp"
+#include "nebula/app/server_app.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -23,7 +23,7 @@ int run_server_app_with_stderr(const std::vector<std::string>& args, std::string
     int exit_code = -1;
     stderr_output = nebula::testsupport::capture_stderr(
         [&]() {
-            nebula::server::ServerApp app(argv.span());
+            nebula::app::ServerApp app(argv.span());
             exit_code = app.run();
         },
         "nebula-server-app-test");

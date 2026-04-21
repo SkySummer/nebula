@@ -1,4 +1,4 @@
-#include "nebula/server/server_app.hpp"
+#include "nebula/app/server_app.hpp"
 
 #include <iostream>
 #include <memory>
@@ -11,10 +11,10 @@
 #include "nebula/common/logger.hpp"
 #include "nebula/common/postgres_connection_pool.hpp"
 #include "nebula/http/router.hpp"
-#include "nebula/server/http_server.hpp"
+#include "nebula/server/server_builder.hpp"
 #include "nebula/storage/storage_http.hpp"
 
-namespace nebula::server {
+namespace nebula::app {
 
 namespace {
 
@@ -31,7 +31,7 @@ std::shared_ptr<http::Router> build_default_router(const ServerConfig& config) {
         });
         if (!added) {
             common::Logger::instance()
-                .fatal(common::LogDomain::Server, "register default route failed")
+                .fatal(common::LogDomain::App, "register default route failed")
                 .field("method", http::to_string(http::HttpMethod::Get))
                 .field("path", "/healthz")
                 .field("decision", "exit_process");
@@ -49,7 +49,7 @@ std::shared_ptr<http::Router> build_default_router(const ServerConfig& config) {
         });
         if (!added) {
             common::Logger::instance()
-                .fatal(common::LogDomain::Server, "register default route failed")
+                .fatal(common::LogDomain::App, "register default route failed")
                 .field("method", http::to_string(http::HttpMethod::Post))
                 .field("path", "/echo")
                 .field("decision", "exit_process");
@@ -68,7 +68,7 @@ bool register_root_default_route(const ServerConfig& config, const std::shared_p
     const std::string& root_default_path = config.root_default_path;
     if (!router->has_route_exact(http::HttpMethod::Get, root_default_path)) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Server, "register default route failed")
+            .fatal(common::LogDomain::App, "register default route failed")
             .field("method", http::to_string(http::HttpMethod::Get))
             .field("path", "/")
             .field("target_path", root_default_path)
@@ -80,7 +80,7 @@ bool register_root_default_route(const ServerConfig& config, const std::shared_p
     const bool root_added = router->add_route(http::HttpMethod::Get, "/", root_default_path);
     if (!root_added && !router->has_route_exact(http::HttpMethod::Get, "/")) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Server, "register default route failed")
+            .fatal(common::LogDomain::App, "register default route failed")
             .field("method", http::to_string(http::HttpMethod::Get))
             .field("path", "/")
             .field("target_path", root_default_path)
@@ -95,7 +95,7 @@ bool initialize_database_pool(const ServerConfig& config) {
     const std::optional<std::string> password = common::resolve_database_password(config.database_password_env);
     if (!password.has_value()) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Server, "database pool init failed")
+            .fatal(common::LogDomain::App, "database pool init failed")
             .field("error", "database_password_env_not_set")
             .field("password_env", config.database_password_env)
             .field("decision", "exit_process");
@@ -124,7 +124,7 @@ bool initialize_database_pool(const ServerConfig& config) {
             break;
     }
     common::Logger::instance()
-        .fatal(common::LogDomain::Server, "database pool init failed")
+        .fatal(common::LogDomain::App, "database pool init failed")
         .field("error", common::to_string(status))
         .field("decision", "exit_process");
     return false;
@@ -154,7 +154,7 @@ bool ServerApp::ensure_auth_service_initialized() {
 
     if (auth_service_ == nullptr) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Server, "register auth routes failed")
+            .fatal(common::LogDomain::App, "register auth routes failed")
             .field("error", "auth_service_init_failed")
             .field("decision", "exit_process");
         return false;
@@ -173,7 +173,7 @@ bool ServerApp::ensure_auth_routes_registered(const std::shared_ptr<http::Router
 
     if (!auth::register_auth_routes(auth_service_, router)) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Server, "register auth routes failed")
+            .fatal(common::LogDomain::App, "register auth routes failed")
             .field("error", "register_auth_routes_failed")
             .field("decision", "exit_process");
         return false;
@@ -194,7 +194,7 @@ bool ServerApp::ensure_storage_routes_registered(const std::shared_ptr<http::Rou
 
     if (!storage::register_storage_routes(startup_.config, router)) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Server, "register storage routes failed")
+            .fatal(common::LogDomain::App, "register storage routes failed")
             .field("error", "register_storage_routes_failed")
             .field("decision", "exit_process");
         return false;
@@ -215,11 +215,11 @@ int ServerApp::run() {
 
     if (startup_.config_source == ServerConfigSource::Default) {
         common::Logger::instance()
-            .info(common::LogDomain::Server, "server config defaults applied")
+            .info(common::LogDomain::App, "server config defaults applied")
             .field("source", to_string(startup_.config_source));
     } else {
         common::Logger::instance()
-            .info(common::LogDomain::Server, "server config loaded")
+            .info(common::LogDomain::App, "server config loaded")
             .field("source", to_string(startup_.config_source))
             .field("path", startup_.config_path.string());
     }
@@ -244,19 +244,22 @@ int ServerApp::run() {
         return 1;
     }
 
-    HttpServerRuntime runtime =
-        HttpServerBuilder().with_config(startup_.config).with_router(router).with_auth_service(auth_service_).build();
-    const RunResult run_result = runtime.run();
-    const bool success = is_successful_run_result(run_result);
+    server::ServerRuntime runtime = server::ServerBuilder()
+                                        .with_config(startup_.config)
+                                        .with_router(router)
+                                        .with_auth_service(auth_service_)
+                                        .build();
+    const server::RunResult run_result = runtime.run();
+    const bool success = server::is_successful_run_result(run_result);
     const int exit_code = success ? 0 : 1;
 
     common::Logger::instance()
-        .info(common::LogDomain::Server, "server process exiting")
-        .field("run_result", to_string(run_result))
+        .info(common::LogDomain::App, "server process exiting")
+        .field("run_result", server::to_string(run_result))
         .field("exit_code", exit_code)
         .field("result", success ? "success" : "failed");
 
     return exit_code;
 }
 
-}  // namespace nebula::server
+}  // namespace nebula::app

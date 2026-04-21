@@ -1,4 +1,4 @@
-#include "nebula/server/http_sub_reactor_pool.hpp"
+#include "nebula/server/sub_reactor_pool.hpp"
 
 #include <cerrno>
 #include <cstddef>
@@ -10,22 +10,22 @@
 
 #include "nebula/common/logger.hpp"
 #include "nebula/common/posix_utils.hpp"
-#include "nebula/server/http_sub_reactor.hpp"
+#include "nebula/server/sub_reactor.hpp"
 
 namespace nebula::server {
 
-HttpSubReactorPool::HttpSubReactorPool(const ServerConfig& config, RequestDispatchFn dispatch_request,
-                                       LifecycleProviderFn lifecycle_provider,
-                                       ForceCloseProviderFn force_close_provider, FatalErrorFn fatal_error_callback)
+SubReactorPool::SubReactorPool(const app::ServerConfig& config, RequestDispatcher request_dispatcher,
+                               LifecycleProvider lifecycle_provider, ForceCloseChecker force_close_checker,
+                               FatalErrorHandler fatal_error_handler)
     : config_(&config),
-      dispatch_request_(std::move(dispatch_request)),
+      request_dispatcher_(std::move(request_dispatcher)),
       lifecycle_provider_(std::move(lifecycle_provider)),
-      force_close_provider_(std::move(force_close_provider)),
-      fatal_error_callback_(std::move(fatal_error_callback)) {}
+      force_close_checker_(std::move(force_close_checker)),
+      fatal_error_handler_(std::move(fatal_error_handler)) {}
 
-HttpSubReactorPool::~HttpSubReactorPool() noexcept = default;
+SubReactorPool::~SubReactorPool() noexcept = default;
 
-bool HttpSubReactorPool::start() {
+bool SubReactorPool::start() {
     next_sub_reactor_index_ = 0;
 
     if (config_ == nullptr) {
@@ -38,8 +38,8 @@ bool HttpSubReactorPool::start() {
     if (sub_reactors_.empty()) {
         sub_reactors_.reserve(config_->sub_reactor_count);
         for (std::size_t idx = 0; idx < config_->sub_reactor_count; ++idx) {
-            auto reactor = std::make_unique<HttpSubReactor>(idx, *config_, dispatch_request_, lifecycle_provider_,
-                                                            force_close_provider_, fatal_error_callback_);
+            auto reactor = std::make_unique<SubReactor>(idx, *config_, request_dispatcher_, lifecycle_provider_,
+                                                        force_close_checker_, fatal_error_handler_);
             sub_reactors_.push_back(std::move(reactor));
         }
     }
@@ -70,7 +70,7 @@ bool HttpSubReactorPool::start() {
     return true;
 }
 
-void HttpSubReactorPool::shutdown() {
+void SubReactorPool::shutdown() {
     std::size_t dropped_pending_count = 0;
     const std::size_t started_count = started_sub_reactor_count_;
 
@@ -96,19 +96,19 @@ void HttpSubReactorPool::shutdown() {
     }
 }
 
-void HttpSubReactorPool::request_stop_all() {
+void SubReactorPool::request_stop_all() {
     for (auto& reactor : sub_reactors_) {
         reactor->request_stop();
     }
 }
 
-void HttpSubReactorPool::notify_all() {
+void SubReactorPool::notify_all() {
     for (auto& reactor : sub_reactors_) {
         reactor->notify_wakeup();
     }
 }
 
-bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted, std::uint64_t connection_token) {
+bool SubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted, std::uint64_t connection_token) {
     if (sub_reactors_.empty()) {
         common::Logger::instance()
             .error(common::LogDomain::Server, "dispatch connection failed")
@@ -123,7 +123,7 @@ bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted
     const std::size_t reactor_id = next_sub_reactor_index_ % sub_reactors_.size();
     next_sub_reactor_index_ = (next_sub_reactor_index_ + 1U) % sub_reactors_.size();
 
-    HttpSubReactor::AcceptedConnection pending;
+    SubReactor::AcceptedConnection pending;
     pending.fd = accepted.fd;
     pending.token = connection_token;
     pending.peer = accepted.peer;
@@ -170,7 +170,7 @@ bool HttpSubReactorPool::dispatch_connection(const net::AcceptedSocket& accepted
     return true;
 }
 
-bool HttpSubReactorPool::enqueue_response(ReactorResponseTask response) {
+bool SubReactorPool::enqueue_response(ReactorResponseTask response) {
     const std::size_t reactor_id = response.reactor_id;
     const int fd = response.fd;
     const std::uint64_t connection_token = response.connection_token;
@@ -198,7 +198,7 @@ bool HttpSubReactorPool::enqueue_response(ReactorResponseTask response) {
     return true;
 }
 
-bool HttpSubReactorPool::all_drained(std::size_t& connection_count, std::size_t& pending_count) const {
+bool SubReactorPool::all_drained(std::size_t& connection_count, std::size_t& pending_count) const {
     connection_count = 0;
     pending_count = 0;
     bool all_drained = true;
@@ -218,7 +218,7 @@ bool HttpSubReactorPool::all_drained(std::size_t& connection_count, std::size_t&
     return all_drained;
 }
 
-std::size_t HttpSubReactorPool::tracked_connection_count() const {
+std::size_t SubReactorPool::tracked_connection_count() const {
     std::size_t count = 0;
     for (const auto& reactor : sub_reactors_) {
         count += reactor->tracked_connection_count();

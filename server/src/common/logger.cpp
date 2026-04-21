@@ -148,6 +148,8 @@ std::string_view to_string(LogLevel level) noexcept {
 
 std::string_view to_string(LogDomain domain) noexcept {
     switch (domain) {
+        case LogDomain::App:
+            return "app";
         case LogDomain::Auth:
             return "auth";
         case LogDomain::Common:

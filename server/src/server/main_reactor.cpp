@@ -1,4 +1,4 @@
-#include "nebula/server/http_main_reactor.hpp"
+#include "nebula/server/main_reactor.hpp"
 
 #include <cerrno>
 
@@ -12,13 +12,13 @@
 
 namespace nebula::server {
 
-HttpMainReactor::HttpMainReactor() : events_(kDefaultEventCapacity) {}
+MainReactor::MainReactor() : events_(kDefaultEventCapacity) {}
 
-HttpMainReactor::~HttpMainReactor() noexcept {
+MainReactor::~MainReactor() noexcept {
     close();
 }
 
-bool HttpMainReactor::open(std::uint16_t port, int backlog) {
+bool MainReactor::open(std::uint16_t port, int backlog) {
     close();
 
     if (!listener_.open(port, backlog)) {
@@ -85,7 +85,7 @@ bool HttpMainReactor::open(std::uint16_t port, int backlog) {
     return true;
 }
 
-void HttpMainReactor::close() noexcept {
+void MainReactor::close() noexcept {
     {
         std::lock_guard lock(wakeup_mutex_);
         if (wakeup_fd_ >= 0) {
@@ -98,7 +98,7 @@ void HttpMainReactor::close() noexcept {
     listener_.close();
 }
 
-bool HttpMainReactor::wait_and_process_events(const std::function<void()>& on_listener_ready, int timeout_ms) {
+bool MainReactor::wait_and_process_events(const std::function<void()>& on_listener_ready, int timeout_ms) {
     const int ready_count = epoll_.wait(events_, timeout_ms);
     if (ready_count < 0) {
         if (errno == EINTR) {
@@ -140,7 +140,7 @@ bool HttpMainReactor::wait_and_process_events(const std::function<void()>& on_li
     return true;
 }
 
-bool HttpMainReactor::close_listener_for_shutdown() {
+bool MainReactor::close_listener_for_shutdown() {
     const int listener_fd = listener_.fd();
     if (listener_fd < 0) {
         return false;
@@ -163,7 +163,7 @@ bool HttpMainReactor::close_listener_for_shutdown() {
     return true;
 }
 
-void HttpMainReactor::notify_wakeup() {
+void MainReactor::notify_wakeup() {
     std::lock_guard lock(wakeup_mutex_);
     if (wakeup_fd_ < 0) {
         return;
@@ -179,19 +179,19 @@ void HttpMainReactor::notify_wakeup() {
     }
 }
 
-net::AcceptedSocket HttpMainReactor::accept_one() const {
+net::AcceptedSocket MainReactor::accept_one() const {
     return listener_.accept_one();
 }
 
-int HttpMainReactor::listener_fd() const {
+int MainReactor::listener_fd() const {
     return listener_.fd();
 }
 
-std::uint16_t HttpMainReactor::listening_port() const {
+std::uint16_t MainReactor::listening_port() const {
     return listener_.port();
 }
 
-void HttpMainReactor::drain_wakeup(int wakeup_fd) {
+void MainReactor::drain_wakeup(int wakeup_fd) {
     const int err = net::drain_eventfd(wakeup_fd);
     if (err != 0) {
         common::Logger::instance()
@@ -202,7 +202,7 @@ void HttpMainReactor::drain_wakeup(int wakeup_fd) {
     }
 }
 
-int HttpMainReactor::load_wakeup_fd() const {
+int MainReactor::load_wakeup_fd() const {
     std::lock_guard lock(wakeup_mutex_);
     return wakeup_fd_;
 }

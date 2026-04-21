@@ -3,12 +3,12 @@
 
 #include <memory>
 
+#include "nebula/app/server_config.hpp"
 #include "nebula/http/router.hpp"
-#include "nebula/server/server_config.hpp"
 
 namespace nebula::storage {
 
-[[nodiscard]] bool register_storage_routes(const server::ServerConfig& config,
+[[nodiscard]] bool register_storage_routes(const app::ServerConfig& config,
                                            const std::shared_ptr<http::Router>& router);
 
 }  // namespace nebula::storage

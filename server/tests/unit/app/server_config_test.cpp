@@ -1,4 +1,4 @@
-#include "nebula/server/server_config.hpp"
+#include "nebula/app/server_config.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -11,9 +11,9 @@
 
 namespace {
 
+using nebula::app::ServerConfig;
+using nebula::app::ServerConfigSource;
 using nebula::common::LogLevel;
-using nebula::server::ServerConfig;
-using nebula::server::ServerConfigSource;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
@@ -73,7 +73,7 @@ void test_load_full_valid_config() {
                "max_file_kb = 120\n");
 
     ::setenv("NEBULA_TEST_DATABASE_PASSWORD_CFG", "db_password", 1);
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     ::unsetenv("NEBULA_TEST_DATABASE_PASSWORD_CFG");
     expect_true(loaded.ok, "valid config should load");
     expect_equal(loaded.source, ServerConfigSource::File, "valid config should report file source");
@@ -132,10 +132,10 @@ void test_worker_thread_count_zero_maps_to_default_auto_value() {
                "[routes]\n"
                "enable_root_default = false\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(loaded.ok, "worker_thread_count zero should load");
     expect_equal(loaded.source, ServerConfigSource::File, "worker_thread_count zero should keep file source");
-    expect_equal(loaded.config.worker_thread_count, nebula::server::default_worker_thread_count(),
+    expect_equal(loaded.config.worker_thread_count, nebula::app::default_worker_thread_count(),
                  "worker_thread_count zero should map to default auto value");
 }
 
@@ -149,10 +149,10 @@ void test_sub_reactor_count_zero_maps_to_default_auto_value() {
                "[routes]\n"
                "enable_root_default = false\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(loaded.ok, "sub_reactor_count zero should load");
     expect_equal(loaded.source, ServerConfigSource::File, "sub_reactor_count zero should keep file source");
-    expect_equal(loaded.config.sub_reactor_count, nebula::server::default_sub_reactor_count(),
+    expect_equal(loaded.config.sub_reactor_count, nebula::app::default_sub_reactor_count(),
                  "sub_reactor_count zero should map to default auto value");
 }
 
@@ -161,7 +161,7 @@ void test_unknown_key_rejected() {
     const std::filesystem::path file = dir.path() / "server.toml";
     write_file(file, "[server]\nport = 8080\nunknown_field = 1\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "unknown key should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(3), "unknown key should report source line");
     expect_contains(loaded.error, "unknown_key", "unknown key should return structured error");
@@ -178,7 +178,7 @@ void test_multiple_unknown_keys_report_stable_first_line() {
                "[logger]\n"
                "unknown_logger = true\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "multiple unknown keys should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(3),
                  "multiple unknown keys should report earliest source line");
@@ -191,7 +191,7 @@ void test_type_mismatch_rejected() {
     const std::filesystem::path file = dir.path() / "server.toml";
     write_file(file, "[server]\nport = \"8080\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "type mismatch should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "type mismatch should report line");
     expect_contains(loaded.error, "type_mismatch", "type mismatch should return structured error");
@@ -202,7 +202,7 @@ void test_out_of_range_rejected() {
     const std::filesystem::path file = dir.path() / "server.toml";
     write_file(file, "[server]\nport = 70000\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "out of range should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "out of range should report line");
     expect_contains(loaded.error, "value_out_of_range", "out of range should return structured error");
@@ -213,7 +213,7 @@ void test_port_zero_rejected() {
     const std::filesystem::path file = dir.path() / "server.toml";
     write_file(file, "[server]\nport = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "port zero should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "port zero should report line");
     expect_equal(loaded.error, std::string("value_out_of_range:server.port"), "port zero should return fixed error");
@@ -229,7 +229,7 @@ void test_storage_root_dir_empty_rejected() {
                "[storage]\n"
                "root_dir = \"\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "empty storage root_dir should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty storage root_dir should report line");
     expect_equal(loaded.error, std::string("invalid_value:storage.root_dir:empty_value"),
@@ -246,7 +246,7 @@ void test_storage_upload_session_ttl_s_must_be_positive() {
                "[storage]\n"
                "upload_session_ttl_s = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "zero storage upload_session_ttl_s should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5),
                  "zero storage upload_session_ttl_s should report line");
@@ -264,7 +264,7 @@ void test_storage_max_file_size_must_be_positive() {
                "[storage]\n"
                "max_file_mb = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "zero storage max_file_mb should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero storage max_file_mb should report line");
     expect_equal(loaded.error, std::string("value_out_of_range:storage.max_file_mb"),
@@ -282,7 +282,7 @@ void test_storage_max_file_size_unit_must_be_unique() {
                "max_file_bytes = 1024\n"
                "max_file_kb = 1\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "multiple storage max file units should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5),
                  "multiple storage max file units should report first unit line");
@@ -297,7 +297,7 @@ void test_root_default_path_type_mismatch_rejected() {
                "[routes]\n"
                "root_default_path = 1\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "root_default_path type mismatch should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "type mismatch should report line");
     expect_equal(loaded.error, std::string("type_mismatch:routes.root_default_path"),
@@ -311,7 +311,7 @@ void test_enable_healthz_type_mismatch_rejected() {
                "[routes]\n"
                "enable_healthz = 1\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "enable_healthz type mismatch should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "enable_healthz type mismatch should report line");
     expect_equal(loaded.error, std::string("type_mismatch:routes.enable_healthz"),
@@ -325,7 +325,7 @@ void test_enable_echo_type_mismatch_rejected() {
                "[routes]\n"
                "enable_echo = 1\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "enable_echo type mismatch should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "enable_echo type mismatch should report line");
     expect_equal(loaded.error, std::string("type_mismatch:routes.enable_echo"),
@@ -339,7 +339,7 @@ void test_enable_root_default_type_mismatch_rejected() {
                "[routes]\n"
                "enable_root_default = 1\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "enable_root_default type mismatch should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2),
                  "enable_root_default type mismatch should report line");
@@ -354,7 +354,7 @@ void test_root_default_path_empty_rejected() {
                "[routes]\n"
                "root_default_path = \"\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "empty root_default_path should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "empty root_default_path should report line");
     expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:empty_path"),
@@ -368,7 +368,7 @@ void test_root_default_path_without_leading_slash_rejected() {
                "[routes]\n"
                "root_default_path = \"healthz\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "root_default_path without leading slash should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2),
                  "root_default_path without leading slash should report line");
@@ -383,7 +383,7 @@ void test_root_default_path_self_mapping_rejected() {
                "[routes]\n"
                "root_default_path = \"/\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "root_default_path self mapping should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "root_default_path self mapping should report line");
     expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:self_mapping_not_allowed"),
@@ -397,7 +397,7 @@ void test_root_default_path_template_rejected() {
                "[routes]\n"
                "root_default_path = \"/users/{id}\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "root_default_path template should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "root_default_path template should report line");
     expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:path_template_not_allowed"),
@@ -411,7 +411,7 @@ void test_root_default_path_required_when_enable_root_default_true() {
                "[routes]\n"
                "enable_root_default = true\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "missing root_default_path should fail when enable_root_default is true");
     expect_equal(loaded.error_line, static_cast<std::size_t>(0),
                  "missing root_default_path should report no concrete source line");
@@ -426,7 +426,7 @@ void test_root_default_path_required_when_enable_root_default_default_true() {
                "[server]\n"
                "port = 8081\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "missing root_default_path should fail when enable_root_default stays default true");
     expect_equal(loaded.error, std::string("invalid_value:routes.root_default_path:required_when_enable_root_default"),
                  "missing root_default_path with default enable_root_default should return fixed error");
@@ -439,7 +439,7 @@ void test_root_default_path_missing_allowed_when_enable_root_default_false() {
                "[routes]\n"
                "enable_root_default = false\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(loaded.ok, "missing root_default_path should be allowed when enable_root_default is false");
     expect_true(!loaded.config.enable_root_default, "enable_root_default should map");
     expect_equal(loaded.config.root_default_path, std::string("/healthz"),
@@ -450,7 +450,7 @@ void test_missing_file_fails() {
     const TempDir dir("nebula-server-config-required");
     const std::filesystem::path missing = dir.path() / "missing.toml";
 
-    const nebula::server::ServerConfigLoadResult loaded(missing);
+    const nebula::app::ServerConfigLoadResult loaded(missing);
     expect_true(!loaded.ok, "missing file should fail");
     expect_equal(loaded.source, ServerConfigSource::File, "missing file should report file source");
     expect_equal(loaded.error, std::string("config_file_not_found"), "missing file should return fixed error");
@@ -466,7 +466,7 @@ void test_auth_jwt_secret_path_empty_rejected() {
                "[auth]\n"
                "jwt_secret_path = \"\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "empty auth.jwt_secret_path should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty auth.jwt_secret_path should report line");
     expect_equal(loaded.error, std::string("invalid_value:auth.jwt_secret_path:empty_value"),
@@ -483,7 +483,7 @@ void test_auth_access_token_ttl_zero_rejected() {
                "[auth]\n"
                "access_token_ttl_s = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "zero auth.access_token_ttl_s should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero auth.access_token_ttl_s should report line");
     expect_equal(loaded.error, std::string("invalid_value:auth.access_token_ttl_s:must_be_positive"),
@@ -500,7 +500,7 @@ void test_auth_access_token_ttl_out_of_range_rejected() {
                "[auth]\n"
                "access_token_ttl_s = 2147483648\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "too large auth.access_token_ttl_s should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5),
                  "too large auth.access_token_ttl_s should report line");
@@ -518,7 +518,7 @@ void test_auth_password_hash_iterations_type_mismatch_rejected() {
                "[auth]\n"
                "password_hash_iterations = \"120000\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "auth.password_hash_iterations type mismatch should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5),
                  "auth.password_hash_iterations type mismatch should report line");
@@ -536,7 +536,7 @@ void test_auth_password_hash_iterations_below_minimum_rejected() {
                "[auth]\n"
                "password_hash_iterations = 9999\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "below minimum auth.password_hash_iterations should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5),
                  "below minimum auth.password_hash_iterations should report line");
@@ -554,7 +554,7 @@ void test_auth_password_hash_iterations_out_of_range_rejected() {
                "[auth]\n"
                "password_hash_iterations = 2147483648\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "too large auth.password_hash_iterations should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5),
                  "too large auth.password_hash_iterations should report line");
@@ -572,7 +572,7 @@ void test_database_host_empty_rejected() {
                "[database]\n"
                "host = \"\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "empty database.host should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty database.host should report line");
     expect_equal(loaded.error, std::string("invalid_value:database.host:empty_value"),
@@ -589,7 +589,7 @@ void test_database_port_zero_rejected() {
                "[database]\n"
                "port = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "zero database.port should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.port should report line");
     expect_equal(loaded.error, std::string("value_out_of_range:database.port"),
@@ -606,7 +606,7 @@ void test_database_name_empty_rejected() {
                "[database]\n"
                "name = \"\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "empty database.name should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty database.name should report line");
     expect_equal(loaded.error, std::string("invalid_value:database.name:empty_value"),
@@ -623,7 +623,7 @@ void test_database_user_empty_rejected() {
                "[database]\n"
                "user = \"\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "empty database.user should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty database.user should report line");
     expect_equal(loaded.error, std::string("invalid_value:database.user:empty_value"),
@@ -640,7 +640,7 @@ void test_database_max_connections_zero_rejected() {
                "[database]\n"
                "max_connections = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "zero database.max_connections should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.max_connections should report line");
     expect_equal(loaded.error, std::string("value_out_of_range:database.max_connections"),
@@ -657,7 +657,7 @@ void test_database_connect_timeout_zero_rejected() {
                "[database]\n"
                "connect_timeout_ms = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "zero database.connect_timeout_ms should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.connect_timeout_ms should report line");
     expect_equal(loaded.error, std::string("value_out_of_range:database.connect_timeout_ms"),
@@ -674,7 +674,7 @@ void test_database_acquire_timeout_zero_rejected() {
                "[database]\n"
                "acquire_timeout_ms = 0\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "zero database.acquire_timeout_ms should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero database.acquire_timeout_ms should report line");
     expect_equal(loaded.error, std::string("value_out_of_range:database.acquire_timeout_ms"),
@@ -688,7 +688,7 @@ void test_database_legacy_pool_size_key_rejected() {
                "[database]\n"
                "pool_size = 8\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "legacy database.pool_size should be rejected");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "legacy database.pool_size should report line");
     expect_equal(loaded.error, std::string("unknown_key:database.pool_size"),
@@ -702,7 +702,7 @@ void test_database_legacy_password_key_rejected() {
                "[database]\n"
                "password = \"nebula\"\n");
 
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "legacy database.password should be rejected");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "legacy database.password should report line");
     expect_equal(loaded.error, std::string("unknown_key:database.password"),
@@ -720,7 +720,7 @@ void test_database_password_env_missing_rejected() {
                "password_env = \"NEBULA_TEST_MISSING_PASSWORD\"\n");
 
     ::unsetenv("NEBULA_TEST_MISSING_PASSWORD");
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     expect_true(!loaded.ok, "missing database.password_env should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(5),
                  "missing database.password_env should report source line");
@@ -739,12 +739,12 @@ void test_database_password_env_present_loads_successfully() {
                "password_env = \"NEBULA_TEST_PASSWORD_FROM_ENV\"\n");
 
     ::setenv("NEBULA_TEST_PASSWORD_FROM_ENV", "from_env", 1);
-    const nebula::server::ServerConfigLoadResult loaded(file);
+    const nebula::app::ServerConfigLoadResult loaded(file);
     ::unsetenv("NEBULA_TEST_PASSWORD_FROM_ENV");
     expect_true(loaded.ok, "database.password_env should satisfy password requirement");
 }
 
-int run_server_config_loader_tests() {
+int run_server_config_tests() {
     ::setenv("NEBULA_DATABASE_PASSWORD", "unit_test_default_password", 1);
     const std::vector<nebula::testsupport::TestCase> tests = {
         {"load full valid config", test_load_full_valid_config},
@@ -804,5 +804,5 @@ int run_server_config_loader_tests() {
 }  // namespace
 
 int main() {
-    return nebula::testsupport::run_main(run_server_config_loader_tests);
+    return nebula::testsupport::run_main(run_server_config_tests);
 }

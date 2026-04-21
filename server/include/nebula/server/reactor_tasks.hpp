@@ -1,5 +1,5 @@
-#ifndef NEBULA_SERVER_HTTP_REACTOR_TASKS_HPP
-#define NEBULA_SERVER_HTTP_REACTOR_TASKS_HPP
+#ifndef NEBULA_SERVER_REACTOR_TASKS_HPP
+#define NEBULA_SERVER_REACTOR_TASKS_HPP
 
 #include <chrono>
 #include <cstddef>
@@ -36,4 +36,4 @@ struct ReactorResponseTask {
 
 }  // namespace nebula::server
 
-#endif  // NEBULA_SERVER_HTTP_REACTOR_TASKS_HPP
+#endif  // NEBULA_SERVER_REACTOR_TASKS_HPP

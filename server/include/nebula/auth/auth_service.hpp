@@ -6,10 +6,10 @@
 #include <string>
 #include <string_view>
 
+#include "nebula/app/server_config.hpp"
 #include "nebula/auth/jwt_service.hpp"
 #include "nebula/auth/password_hasher.hpp"
 #include "nebula/auth/user_types.hpp"
-#include "nebula/server/server_config.hpp"
 
 namespace nebula::auth {
 
@@ -61,7 +61,7 @@ private:
     JwtService jwt_service_;
 };
 
-[[nodiscard]] std::shared_ptr<AuthService> initialize_auth_service(const server::ServerConfig& config);
+[[nodiscard]] std::shared_ptr<AuthService> initialize_auth_service(const app::ServerConfig& config);
 
 }  // namespace nebula::auth
 

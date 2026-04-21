@@ -1,4 +1,4 @@
-#include "nebula/server/server_config.hpp"
+#include "nebula/app/server_config.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,9 +17,9 @@
 #include <unordered_set>
 #include <utility>
 
-#include "nebula/config/toml_parser.hpp"
+#include "nebula/common/toml_parser.hpp"
 
-namespace nebula::server {
+namespace nebula::app {
 
 namespace {
 
@@ -27,7 +27,7 @@ constexpr std::int64_t kMaxAuthAccessTokenTtlSeconds = 86'400;
 constexpr std::int64_t kMaxStorageUploadSessionTtlSeconds = 2'592'000;
 constexpr std::int64_t kMaxStorageFileBytes = std::numeric_limits<std::int64_t>::max();
 
-using Table = std::unordered_map<std::string, config::TomlValue>;
+using Table = std::unordered_map<std::string, common::TomlValue>;
 
 const std::unordered_set<std::string> kKnownKeys = {
     "server.port",
@@ -83,7 +83,7 @@ void fail(ServerConfigLoadResult& result, std::string error, std::size_t error_l
     result.error_line = error_line;
 }
 
-const config::TomlValue* find_value(const Table& table, std::string_view key) {
+const common::TomlValue* find_value(const Table& table, std::string_view key) {
     const auto it = table.find(std::string(key));
     if (it == table.end()) {
         return nullptr;
@@ -125,7 +125,7 @@ bool assign_integer_in_range(const Table& table, std::string_view key, IntType& 
                              IntType max_value, ServerConfigLoadResult& result) {
     static_assert(std::is_integral_v<IntType>);
 
-    const config::TomlValue* raw = find_value(table, key);
+    const common::TomlValue* raw = find_value(table, key);
     if (raw == nullptr) {
         return true;
     }
@@ -204,7 +204,7 @@ bool assign_integer_non_negative(const Table& table, std::string_view key, IntTy
 }
 
 bool assign_bool_value(const Table& table, std::string_view key, bool& target, ServerConfigLoadResult& result) {
-    const config::TomlValue* raw = find_value(table, key);
+    const common::TomlValue* raw = find_value(table, key);
     if (raw == nullptr) {
         return true;
     }
@@ -221,7 +221,7 @@ bool assign_bool_value(const Table& table, std::string_view key, bool& target, S
 
 bool assign_string_value(const Table& table, std::string_view key, std::string& target,
                          ServerConfigLoadResult& result) {
-    const config::TomlValue* raw = find_value(table, key);
+    const common::TomlValue* raw = find_value(table, key);
     if (raw == nullptr) {
         return true;
     }
@@ -283,7 +283,7 @@ bool validate_known_keys(const Table& table, ServerConfigLoadResult& result) {
 }
 
 bool parse_toml_table(std::string_view text, Table& table, ServerConfigLoadResult& result) {
-    const config::TomlParseResult parsed = config::parse_toml(text);
+    const common::TomlParseResult parsed = common::parse_toml(text);
     if (!parsed.ok) {
         fail(result, std::format("parse_toml_failed:{}", parsed.error), parsed.error_line);
         return false;
@@ -294,7 +294,7 @@ bool parse_toml_table(std::string_view text, Table& table, ServerConfigLoadResul
 }
 
 bool apply_server_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
-    const config::TomlValue* port_raw = find_value(table, "server.port");
+    const common::TomlValue* port_raw = find_value(table, "server.port");
     if (!assign_integer(table, "server.port", config.port, result)) {
         return false;
     }
@@ -319,7 +319,7 @@ bool apply_server_values(const Table& table, ServerConfig& config, ServerConfigL
 }
 
 bool apply_logger_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
-    const config::TomlValue* log_level = find_value(table, "logger.level");
+    const common::TomlValue* log_level = find_value(table, "logger.level");
     if (log_level != nullptr) {
         const auto* text_value = std::get_if<std::string>(&log_level->value);
         if (text_value == nullptr) {
@@ -377,7 +377,7 @@ bool apply_route_values(const Table& table, ServerConfig& config, ServerConfigLo
         return false;
     }
 
-    const config::TomlValue* root_default_path_raw = find_value(table, "routes.root_default_path");
+    const common::TomlValue* root_default_path_raw = find_value(table, "routes.root_default_path");
     if (root_default_path_raw == nullptr) {
         if (config.enable_root_default) {
             fail(result, "invalid_value:routes.root_default_path:required_when_enable_root_default");
@@ -421,7 +421,7 @@ bool assign_non_empty_string_value(const Table& table, std::string_view key, std
         return true;
     }
 
-    const config::TomlValue* raw = find_value(table, key);
+    const common::TomlValue* raw = find_value(table, key);
     fail(result, std::format("invalid_value:{}:empty_value", key), raw == nullptr ? 0 : raw->line);
     return false;
 }
@@ -436,7 +436,7 @@ bool validate_database_password_env(const Table& table, ServerConfig& config, Se
         return true;
     }
 
-    const config::TomlValue* password_env_raw = find_value(table, "database.password_env");
+    const common::TomlValue* password_env_raw = find_value(table, "database.password_env");
     fail(result, "invalid_value:database.password_env:env_not_set",
          password_env_raw == nullptr ? 0 : password_env_raw->line);
     return false;
@@ -483,10 +483,10 @@ bool apply_storage_values(const Table& table, ServerConfig& config, ServerConfig
         return false;
     }
 
-    const config::TomlValue* max_file_bytes = find_value(table, "storage.max_file_bytes");
-    const config::TomlValue* max_file_kb = find_value(table, "storage.max_file_kb");
-    const config::TomlValue* max_file_mb = find_value(table, "storage.max_file_mb");
-    const config::TomlValue* max_file_gb = find_value(table, "storage.max_file_gb");
+    const common::TomlValue* max_file_bytes = find_value(table, "storage.max_file_bytes");
+    const common::TomlValue* max_file_kb = find_value(table, "storage.max_file_kb");
+    const common::TomlValue* max_file_mb = find_value(table, "storage.max_file_mb");
+    const common::TomlValue* max_file_gb = find_value(table, "storage.max_file_gb");
     const std::size_t configured_count = (max_file_bytes == nullptr ? 0U : 1U) + (max_file_kb == nullptr ? 0U : 1U) +
                                          (max_file_mb == nullptr ? 0U : 1U) + (max_file_gb == nullptr ? 0U : 1U);
     if (configured_count == 0U) {
@@ -494,9 +494,9 @@ bool apply_storage_values(const Table& table, ServerConfig& config, ServerConfig
     }
     if (configured_count > 1U) {
         std::size_t error_line = std::numeric_limits<std::size_t>::max();
-        const std::array<const config::TomlValue*, 4> size_values = {max_file_bytes, max_file_kb, max_file_mb,
+        const std::array<const common::TomlValue*, 4> size_values = {max_file_bytes, max_file_kb, max_file_mb,
                                                                      max_file_gb};
-        for (const config::TomlValue* value : size_values) {
+        for (const common::TomlValue* value : size_values) {
             if (value != nullptr) {
                 error_line = std::min(error_line, value->line);
             }
@@ -527,7 +527,7 @@ bool apply_storage_values(const Table& table, ServerConfig& config, ServerConfig
 }
 
 bool apply_auth_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
-    const config::TomlValue* jwt_secret_path_raw = find_value(table, "auth.jwt_secret_path");
+    const common::TomlValue* jwt_secret_path_raw = find_value(table, "auth.jwt_secret_path");
     if (jwt_secret_path_raw != nullptr) {
         const auto* jwt_secret_path = std::get_if<std::string>(&jwt_secret_path_raw->value);
         if (jwt_secret_path == nullptr) {
@@ -546,7 +546,7 @@ bool apply_auth_values(const Table& table, ServerConfig& config, ServerConfigLoa
         return false;
     }
     if (config.auth_access_token_ttl_s == 0) {
-        const config::TomlValue* token_ttl_raw = find_value(table, "auth.access_token_ttl_s");
+        const common::TomlValue* token_ttl_raw = find_value(table, "auth.access_token_ttl_s");
         fail(result, "invalid_value:auth.access_token_ttl_s:must_be_positive",
              token_ttl_raw == nullptr ? 0 : token_ttl_raw->line);
         return false;
@@ -664,4 +664,4 @@ ServerConfigLoadResult::ServerConfigLoadResult(const std::filesystem::path& path
     ok = true;
 }
 
-}  // namespace nebula::server
+}  // namespace nebula::app

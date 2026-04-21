@@ -1,5 +1,3 @@
-#include "nebula/server/http_server.hpp"
-
 #include <cctype>
 #include <cerrno>
 #include <chrono>
@@ -31,6 +29,7 @@
 #include "nebula/common/logger.hpp"
 #include "nebula/common/postgres_connection_pool.hpp"
 #include "nebula/http/router.hpp"
+#include "nebula/server/server_builder.hpp"
 #include "nebula_tests/test_support.hpp"
 #include "nebula_tests/test_support_integration.hpp"
 
@@ -44,12 +43,11 @@ using nebula::testsupport::expect_true;
 using nebula::testsupport::write_jwt_secret_file;
 using nebula::testsupport::integration::build_runtime;
 using nebula::testsupport::integration::connect_localhost;
+using nebula::testsupport::integration::kIntegrationJwtSecret;
 using nebula::testsupport::integration::read_until_close;
 using nebula::testsupport::integration::send_all;
 using nebula::testsupport::integration::ServerThreadGuard;
 using nebula::testsupport::integration::wait_until_server_ready;
-
-constexpr std::string_view kIntegrationJwtSecret = "integration_auth_secret_0123456789abcdef";
 
 std::shared_ptr<nebula::http::Router> build_default_router(
     std::optional<std::string> root_default_path = std::string("/healthz")) {
@@ -282,7 +280,7 @@ private:
 };
 
 void test_healthz_endpoint() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -312,7 +310,7 @@ void test_signal_mask_restored_after_http_server_destroyed() {
     const sigset_t before_mask = signal_mask_guard.saved_mask();
 
     {
-        nebula::server::ServerConfig config;
+        nebula::app::ServerConfig config;
         config.port = 0;
         config.worker_thread_count = 1;
         auto server = build_runtime(config, build_default_router());
@@ -341,7 +339,7 @@ void test_signal_shutdown_remains_available_after_restart() {
     expect_true(sigint_guard.installed(), "install SIGINT temporary handler should succeed");
     expect_true(sigterm_guard.installed(), "install SIGTERM temporary handler should succeed");
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -394,7 +392,7 @@ void test_signal_shutdown_with_preexisting_unmasked_thread() {
     }
     expect_true(helper_ready.load(), "preexisting helper thread should start");
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -422,7 +420,7 @@ void test_signal_shutdown_with_preexisting_unmasked_thread() {
 }
 
 void test_healthz_endpoint_absolute_form() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -446,7 +444,7 @@ void test_healthz_endpoint_absolute_form() {
 }
 
 void test_healthz_endpoint_with_query() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -470,7 +468,7 @@ void test_healthz_endpoint_with_query() {
 }
 
 void test_root_endpoint_mapped_to_healthz_by_default() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -494,7 +492,7 @@ void test_root_endpoint_mapped_to_healthz_by_default() {
 }
 
 void test_root_endpoint_not_found_when_root_mapping_disabled() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router(std::nullopt));
@@ -518,7 +516,7 @@ void test_root_endpoint_not_found_when_root_mapping_disabled() {
 }
 
 void test_head_method_suppresses_body() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -562,7 +560,7 @@ void test_head_method_suppresses_body() {
 }
 
 void test_echo_endpoint() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -594,7 +592,7 @@ void test_auth_route_registration_fails_when_database_unreachable() {
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
     write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
@@ -639,7 +637,7 @@ void test_request_completed_log_uses_raw_request_line() {
     const std::string stderr_text = capture_stderr([&]() {
         nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Info, log_dir.path(), true);
 
-        nebula::server::ServerConfig config;
+        nebula::app::ServerConfig config;
         config.port = 0;
         config.worker_thread_count = 2;
         auto server = build_runtime(config, build_default_router());
@@ -677,7 +675,7 @@ void test_connections_dispatched_to_multiple_sub_reactors() {
     const std::string stderr_text = capture_stderr([&]() {
         nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Debug, log_dir.path(), true);
 
-        nebula::server::ServerConfig config;
+        nebula::app::ServerConfig config;
         config.port = 0;
         config.sub_reactor_count = 2;
         config.worker_thread_count = 2;
@@ -710,7 +708,7 @@ void test_connections_dispatched_to_multiple_sub_reactors() {
 }
 
 void test_sub_reactor_count_zero_uses_default_value_in_constructor() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.sub_reactor_count = 0;
     config.worker_thread_count = 2;
@@ -734,7 +732,7 @@ void test_sub_reactor_count_zero_uses_default_value_in_constructor() {
 }
 
 void test_keep_alive_two_requests() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -769,7 +767,7 @@ void test_keep_alive_two_requests() {
 void test_client_reset_during_response_keeps_server_running() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -815,7 +813,7 @@ void test_client_reset_during_response_keeps_server_running() {
 void test_stale_async_response_not_delivered_to_new_connection() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -864,7 +862,7 @@ void test_stale_async_response_not_delivered_to_new_connection() {
 }
 
 void test_concurrent_requests() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 4;
     auto server = build_runtime(config, build_default_router());
@@ -905,7 +903,7 @@ void test_concurrent_requests() {
 void test_concurrent_start_allows_only_one_success() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -949,7 +947,7 @@ void test_concurrent_start_allows_only_one_success() {
 void test_start_rejected_while_running_does_not_break_response_submission() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -981,7 +979,7 @@ void test_start_rejected_while_running_does_not_break_response_submission() {
 void test_early_stop_during_start_leaves_server_reusable() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1023,7 +1021,7 @@ void test_early_stop_during_start_leaves_server_reusable() {
 void test_single_prestart_stop_cancels_start_once_and_server_remains_reusable() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1056,7 +1054,7 @@ void test_single_prestart_stop_cancels_start_once_and_server_remains_reusable() 
 void test_builder_server_supports_prestart_cancel() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.manage_signals = false;
@@ -1073,24 +1071,24 @@ void test_builder_server_supports_prestart_cancel() {
 }
 
 void test_builder_build_without_router_throws() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.manage_signals = false;
 
     bool thrown = false;
     try {
-        [[maybe_unused]] auto server = nebula::server::HttpServerBuilder().with_config(config).build();
-    } catch (const std::invalid_argument& error) {
+        [[maybe_unused]] auto server = nebula::server::ServerBuilder().with_config(config).build();
+    } catch (const std::invalid_argument& e) {
         thrown = true;
-        expect_contains(error.what(), "router_missing", "missing router should expose stable error code");
+        expect_contains(e.what(), "router_missing", "missing router should expose stable error code");
     }
 
     expect_true(thrown, "builder should reject missing router");
 }
 
 void test_builder_build_without_auth_service_throws_when_require_user_route_exists() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.manage_signals = false;
@@ -1110,11 +1108,10 @@ void test_builder_build_without_auth_service_throws_when_require_user_route_exis
 
     bool thrown = false;
     try {
-        [[maybe_unused]] auto server =
-            nebula::server::HttpServerBuilder().with_config(config).with_router(router).build();
-    } catch (const std::invalid_argument& error) {
+        [[maybe_unused]] auto server = nebula::server::ServerBuilder().with_config(config).with_router(router).build();
+    } catch (const std::invalid_argument& e) {
         thrown = true;
-        expect_contains(error.what(), "auth_service_missing", "missing auth service should expose stable error code");
+        expect_contains(e.what(), "auth_service_missing", "missing auth service should expose stable error code");
     }
 
     expect_true(thrown, "builder should reject missing auth service when require_user route exists");
@@ -1123,12 +1120,12 @@ void test_builder_build_without_auth_service_throws_when_require_user_route_exis
 void test_builder_build_supports_multiple_runtime_instances_from_same_builder() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.manage_signals = false;
 
-    auto builder = nebula::server::HttpServerBuilder().with_config(config).with_router(build_default_router());
+    auto builder = nebula::server::ServerBuilder().with_config(config).with_router(build_default_router());
     auto server1 = builder.build();
     auto server2 = builder.build();
 
@@ -1156,7 +1153,7 @@ void test_builder_build_supports_multiple_runtime_instances_from_same_builder() 
 void test_graceful_stop_completes_inflight_request() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -1201,7 +1198,7 @@ void test_graceful_stop_completes_inflight_request() {
 void test_graceful_stop_rejects_new_connections_quickly() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -1261,7 +1258,7 @@ void test_graceful_stop_rejects_new_connections_quickly() {
 void test_graceful_stop_timeout_forces_close_in_bounded_time() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 1;
     config.graceful_shutdown_timeout = 250ms;
@@ -1306,7 +1303,7 @@ void test_graceful_stop_timeout_forces_close_in_bounded_time() {
 void test_graceful_stop_low_timeout_without_inflight_completes() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 1;
     config.graceful_shutdown_timeout = 30ms;
@@ -1333,7 +1330,7 @@ void test_graceful_stop_low_timeout_without_inflight_completes() {
 void test_graceful_stop_client_disconnect_does_not_timeout_on_late_response() {
     using namespace std::chrono_literals;
 
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 1;
     config.graceful_shutdown_timeout = 350ms;
@@ -1391,7 +1388,7 @@ void test_graceful_stop_client_disconnect_does_not_timeout_on_late_response() {
 }
 
 void test_add_route_while_running() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 4;
     const auto router = build_default_router();
@@ -1444,7 +1441,7 @@ void test_add_route_while_running() {
 }
 
 void test_del_route_while_running() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 4;
     const auto router = build_default_router();
@@ -1479,7 +1476,7 @@ void test_del_route_while_running() {
 }
 
 void test_mod_route_while_running() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 4;
     const auto router = build_default_router();
@@ -1529,7 +1526,7 @@ void test_mod_route_while_running() {
 }
 
 void test_method_not_allowed_includes_allow_header() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -1575,7 +1572,7 @@ void test_method_not_allowed_includes_allow_header() {
 }
 
 void test_dynamic_route_runtime_match_and_params() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -1610,7 +1607,7 @@ void test_dynamic_route_runtime_match_and_params() {
 }
 
 void test_static_route_precedence_over_dynamic_route_runtime() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     const auto router = build_default_router();
@@ -1654,7 +1651,7 @@ void test_static_route_precedence_over_dynamic_route_runtime() {
 }
 
 void test_chunked_request_echo_endpoint() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1681,7 +1678,7 @@ void test_chunked_request_echo_endpoint() {
 }
 
 void test_chunked_many_boundaries_within_decoded_limit_returns_200() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.max_header_bytes = 128U;
@@ -1712,7 +1709,7 @@ void test_chunked_many_boundaries_within_decoded_limit_returns_200() {
 }
 
 void test_missing_host_returns_400() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1737,7 +1734,7 @@ void test_missing_host_returns_400() {
 }
 
 void test_empty_host_returns_400() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1763,7 +1760,7 @@ void test_empty_host_returns_400() {
 }
 
 void test_unknown_method_returns_501() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1789,7 +1786,7 @@ void test_unknown_method_returns_501() {
 }
 
 void test_unsupported_http_version_returns_505() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1816,7 +1813,7 @@ void test_unsupported_http_version_returns_505() {
 }
 
 void test_invalid_http_version_returns_400() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1842,7 +1839,7 @@ void test_invalid_http_version_returns_400() {
 }
 
 void test_content_too_large_returns_413() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.max_body_bytes = 8U;
@@ -1871,7 +1868,7 @@ void test_content_too_large_returns_413() {
 }
 
 void test_header_too_large_returns_431() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.max_header_bytes = 128U;
@@ -1901,7 +1898,7 @@ void test_header_too_large_returns_431() {
 }
 
 void test_uri_too_long_returns_414() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.max_request_target_bytes = 8U;
@@ -1927,7 +1924,7 @@ void test_uri_too_long_returns_414() {
 }
 
 void test_head_parse_error_suppresses_body() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1960,7 +1957,7 @@ void test_head_parse_error_suppresses_body() {
 }
 
 void test_parse_error_responds_once_before_close() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     auto server = build_runtime(config, build_default_router());
@@ -1993,7 +1990,7 @@ void test_parse_error_responds_once_before_close() {
 }
 
 void test_processing_state_pending_buffer_limit() {
-    nebula::server::ServerConfig config;
+    nebula::app::ServerConfig config;
     config.port = 0;
     config.worker_thread_count = 2;
     config.max_header_bytes = 96U;
