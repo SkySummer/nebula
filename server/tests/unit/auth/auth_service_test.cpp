@@ -1,17 +1,16 @@
 #include "nebula/auth/auth_service.hpp"
 
-#include <charconv>
 #include <cstdint>
 #include <iostream>
 #include <optional>
 #include <pqxx/pqxx>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "nebula/auth/jwt_service.hpp"
 #include "nebula/auth/password_hash_limits.hpp"
 #include "nebula/auth/password_hasher.hpp"
+#include "nebula/auth/user_repository.hpp"
 #include "nebula/common/base64.hpp"
 #include "nebula/common/postgres_connection_pool.hpp"
 #include "nebula_tests/test_support.hpp"
@@ -21,26 +20,19 @@ namespace {
 
 using nebula::auth::AuthErrorCode;
 using nebula::auth::AuthService;
+using nebula::auth::check_user_schema_ready;
 using nebula::auth::JwtConfig;
 using nebula::auth::JwtService;
 using nebula::auth::kMinPasswordHashIterations;
 using nebula::auth::PasswordHashConfig;
 using nebula::auth::PasswordHasher;
+using nebula::auth::PasswordHashValue;
 using nebula::common::PostgresConnectionPool;
 using nebula::common::PostgresConnectionPoolOptions;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
-using nebula::testsupport::database::load_postgres_pool_test_options;
+using nebula::testsupport::database::require_postgres_pool_test_options;
 using nebula::testsupport::database::validate_database_test_env;
-using nebula::user::check_user_schema_ready;
-
-PostgresConnectionPoolOptions require_test_options() {
-    const std::optional<PostgresConnectionPoolOptions> options = load_postgres_pool_test_options();
-    if (!options.has_value()) {
-        nebula::testsupport::fail("postgres test database env should be configured before running tests");
-    }
-    return options.value();
-}
 
 void truncate_users(const PostgresConnectionPoolOptions& options) {
     pqxx::connection connection(nebula::common::build_connection_info(options));
@@ -51,7 +43,7 @@ void truncate_users(const PostgresConnectionPoolOptions& options) {
 }
 
 void initialize_database_user_repository() {
-    const PostgresConnectionPoolOptions options = require_test_options();
+    const PostgresConnectionPoolOptions options = require_postgres_pool_test_options();
     const PostgresConnectionPool::InitializeStatus status = PostgresConnectionPool::instance().initialize(options);
     expect_true(status == PostgresConnectionPool::InitializeStatus::Initialized ||
                     status == PostgresConnectionPool::InitializeStatus::AlreadyInitialized,
@@ -64,36 +56,6 @@ void initialize_database_user_repository() {
     }
 
     truncate_users(options);
-}
-
-std::vector<std::string_view> split(std::string_view text, char separator) {
-    std::vector<std::string_view> parts;
-    std::size_t start = 0;
-    while (start <= text.size()) {
-        const std::size_t pos = text.find(separator, start);
-        if (pos == std::string_view::npos) {
-            parts.push_back(text.substr(start));
-            break;
-        }
-        parts.push_back(text.substr(start, pos - start));
-        start = pos + 1U;
-    }
-    return parts;
-}
-
-std::optional<std::uint64_t> parse_uint64(std::string_view text) {
-    if (text.empty()) {
-        return std::nullopt;
-    }
-
-    std::uint64_t value = 0;
-    const char* const begin = text.data();
-    const char* const end = text.data() + text.size();
-    const std::from_chars_result result = std::from_chars(begin, end, value);
-    if (result.ec != std::errc{} || result.ptr != end) {
-        return std::nullopt;
-    }
-    return value;
 }
 
 void test_username_validation_boundaries() {
@@ -119,10 +81,8 @@ void test_password_hasher_hash_and_verify() {
     if (!hash.has_value()) {
         nebula::testsupport::fail("hash_password should produce hash");
     }
-    const std::string& hash_value = *hash;
-    expect_true(PasswordHasher::verify_password(password, hash_value),
-                "verify_password should accept correct password");
-    expect_true(!PasswordHasher::verify_password("wrong_password_123", hash_value),
+    expect_true(PasswordHasher::verify_password(password, *hash), "verify_password should accept correct password");
+    expect_true(!PasswordHasher::verify_password("wrong_password_123", *hash),
                 "verify_password should reject wrong password");
 }
 
@@ -135,27 +95,14 @@ void test_password_hasher_verify_rejects_cost_amplification_payload() {
         nebula::testsupport::fail("hash_password should produce hash");
     }
 
-    const std::vector<std::string_view> parts = split(*hash, '$');
-    expect_equal(parts.size(), static_cast<std::size_t>(4U), "encoded hash should have 4 parts");
-    if (parts.size() != 4U) {
-        nebula::testsupport::fail("encoded hash should have 4 parts");
-    }
-
-    const std::uint64_t high_iterations = static_cast<std::uint64_t>(nebula::auth::kMaxPasswordHashIterations) + 1U;
-    const std::string high_iterations_hash = nebula::auth::format_password_hash(high_iterations, parts[2], parts[3]);
+    PasswordHashValue high_iterations_hash = *hash;
+    high_iterations_hash.iterations = nebula::auth::kMaxPasswordHashIterations + 1U;
     expect_true(!PasswordHasher::verify_password(password, high_iterations_hash),
                 "verify_password should reject iterations above allowed max");
 
-    const std::optional<std::uint64_t> iterations = parse_uint64(parts[1]);
-    expect_true(iterations.has_value(), "encoded hash iterations should be numeric");
-    if (!iterations.has_value()) {
-        nebula::testsupport::fail("encoded hash iterations should be numeric");
-    }
-
-    const std::string oversized_derived_hash =
-        nebula::auth::format_password_hash(*iterations, parts[2],
-                                           nebula::common::base64url_encode(std::vector<std::uint8_t>(
-                                               nebula::auth::kMaxPasswordHashDerivedKeyBytes + 1U, 7U)));
+    PasswordHashValue oversized_derived_hash = *hash;
+    oversized_derived_hash.derived_key = nebula::common::base64url_encode(
+        std::vector<std::uint8_t>(nebula::auth::kMaxPasswordHashDerivedKeyBytes + 1U, 7U));
     expect_true(!PasswordHasher::verify_password(password, oversized_derived_hash),
                 "verify_password should reject derived key length above allowed max");
 }
@@ -173,11 +120,11 @@ void test_auth_service_register_login_authenticate() {
     expect_equal(duplicate.error, AuthErrorCode::UsernameAlreadyExists,
                  "register_user should reject duplicate username");
 
-    const auto login = auth_service.login("Alice_1", "password_123");
+    const auto login = auth_service.login_user("Alice_1", "password_123");
     expect_equal(login.error, AuthErrorCode::Ok, "login should succeed with correct credentials");
     expect_true(!login.access_token.empty(), "login should issue access token");
 
-    const auto login_failed = auth_service.login("Alice_1", "password_124");
+    const auto login_failed = auth_service.login_user("Alice_1", "password_124");
     expect_equal(login_failed.error, AuthErrorCode::InvalidCredentials,
                  "login should reject wrong credentials with stable error");
 
@@ -250,7 +197,7 @@ int run_auth_service_tests() {
     const std::optional<std::string> env_error = validate_database_test_env();
     if (env_error.has_value()) {
         std::cerr << "[SKIP] auth service test precheck skipped: error=" << *env_error << '\n';
-        return nebula::testsupport::database::kDatabaseTestSkipReturnCode;
+        return nebula::testsupport::kTestSkipReturnCode;
     }
 
     const std::vector<nebula::testsupport::TestCase> tests = {

@@ -7,6 +7,8 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "nebula/common/posix_utils.hpp"
+
 ssize_t nebula_test_read(int fd, void* buffer, std::size_t count);
 ssize_t nebula_test_write(int fd, const void* buffer, std::size_t count);
 
@@ -94,9 +96,7 @@ class ScopedFd {
 public:
     explicit ScopedFd(int fd) : fd_(fd) {}
     ~ScopedFd() noexcept {
-        if (fd_ >= 0) {
-            ::close(fd_);
-        }
+        nebula::common::close_fd(fd_);
     }
 
     ScopedFd(const ScopedFd&) = delete;
@@ -113,23 +113,15 @@ private:
 };
 
 ReadFaultStep read_errno_fault(int err) {
-    return ReadFaultStep{
-        .kind = ReadFaultStep::Kind::Errno,
-        .err = err,
-        .value = 0,
-    };
+    return {.kind = ReadFaultStep::Kind::Errno, .err = err, .value = 0};
 }
 
 ReadFaultStep read_value_fault(std::uint64_t value) {
-    return ReadFaultStep{
-        .kind = ReadFaultStep::Kind::Value,
-        .err = 0,
-        .value = value,
-    };
+    return {.kind = ReadFaultStep::Kind::Value, .err = 0, .value = value};
 }
 
 WriteFaultStep write_errno_fault(int err) {
-    return WriteFaultStep{.err = err};
+    return {.err = err};
 }
 
 void test_notify_eventfd_retries_on_eintr_then_succeeds() {

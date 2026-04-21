@@ -17,6 +17,7 @@ enum class RunResult : std::uint8_t {
 };
 
 [[nodiscard]] std::string_view to_string(RunResult result) noexcept;
+
 [[nodiscard]] bool is_successful_run_result(RunResult result) noexcept;
 
 }  // namespace nebula::server

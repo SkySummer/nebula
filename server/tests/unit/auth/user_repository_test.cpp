@@ -1,3 +1,5 @@
+#include "nebula/auth/user_repository.hpp"
+
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -6,35 +8,26 @@
 #include <vector>
 
 #include "nebula/common/postgres_connection_pool.hpp"
-#include "nebula/user/user_repository.hpp"
 #include "nebula_tests/test_support.hpp"
 #include "nebula_tests/test_support_database.hpp"
 
 namespace {
 
+using nebula::auth::allocate_user_id;
+using nebula::auth::check_user_schema_ready;
+using nebula::auth::create_user;
+using nebula::auth::find_user_by_id;
+using nebula::auth::find_user_by_username;
+using nebula::auth::UserAllocateIdStatus;
+using nebula::auth::UserCreateResult;
+using nebula::auth::UserFindStatus;
+using nebula::auth::UserInfo;
 using nebula::common::PostgresConnectionPool;
 using nebula::common::PostgresConnectionPoolOptions;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
-using nebula::testsupport::database::load_postgres_pool_test_options;
+using nebula::testsupport::database::require_postgres_pool_test_options;
 using nebula::testsupport::database::validate_database_test_env;
-using nebula::user::allocate_user_id;
-using nebula::user::check_user_schema_ready;
-using nebula::user::create_user;
-using nebula::user::find_user_by_id;
-using nebula::user::find_user_by_username;
-using nebula::user::UserAllocateIdStatus;
-using nebula::user::UserCreateResult;
-using nebula::user::UserFindStatus;
-using nebula::user::UserInfo;
-
-PostgresConnectionPoolOptions require_test_options() {
-    const std::optional<PostgresConnectionPoolOptions> options = load_postgres_pool_test_options();
-    if (!options.has_value()) {
-        nebula::testsupport::fail("postgres test database env should be configured before running tests");
-    }
-    return options.value();
-}
 
 void truncate_users(const PostgresConnectionPoolOptions& options) {
     pqxx::connection connection(nebula::common::build_connection_info(options));
@@ -44,7 +37,7 @@ void truncate_users(const PostgresConnectionPoolOptions& options) {
     tx.commit();
 }
 
-void test_repository_initialize_fails_when_connection_unreachable() {
+void test_postgres_schema_check_fails_when_connection_unreachable() {
     PostgresConnectionPoolOptions options{
         .host = "127.0.0.1",
         .port = 1,
@@ -64,8 +57,8 @@ void test_repository_initialize_fails_when_connection_unreachable() {
     expect_true(!schema_ready, "user schema check should fail when pool is unavailable");
 }
 
-void test_repository_crud_with_database() {
-    const PostgresConnectionPoolOptions options = require_test_options();
+void test_postgres_repository_crud() {
+    const PostgresConnectionPoolOptions options = require_postgres_pool_test_options();
 
     const PostgresConnectionPool::InitializeStatus status = PostgresConnectionPool::instance().initialize(options);
     expect_equal(status, PostgresConnectionPool::InitializeStatus::Initialized,
@@ -85,7 +78,10 @@ void test_repository_crud_with_database() {
     UserInfo user;
     user.user_id = first_id.user_id;
     user.username = "Alice_1";
-    user.password_hash = "hash_1";
+    user.password_hash.algorithm = "pbkdf2_sha256";
+    user.password_hash.iterations = 120000;
+    user.password_hash.salt = "salt_1";
+    user.password_hash.derived_key = "derived_1";
     user.created_at_s = 1700000000;
     expect_equal(create_user(user), UserCreateResult::Created, "create_user should insert user");
 
@@ -104,6 +100,10 @@ void test_repository_crud_with_database() {
     const auto found_username = find_user_by_username("Alice_1");
     expect_equal(found_username.status, UserFindStatus::Found, "find_by_username should return found");
     expect_equal(found_username.info.user_id, first_id.user_id, "find_by_username should map to persisted user id");
+    expect_equal(found_username.info.password_hash.algorithm, std::string("pbkdf2_sha256"),
+                 "find_by_username should map password hash algorithm");
+    expect_equal(found_username.info.password_hash.iterations, static_cast<std::uint32_t>(120000),
+                 "find_by_username should map password hash iterations");
 
     const auto missing_duplicate_user_id_username = find_user_by_username("Alice_2");
     expect_equal(missing_duplicate_user_id_username.status, UserFindStatus::NotFound,
@@ -119,17 +119,17 @@ void test_repository_crud_with_database() {
     expect_equal(missing_user_id.status, UserFindStatus::NotFound, "unknown user id should return not_found");
 }
 
-int run_postgres_user_repository_tests() {
+int run_user_repository_tests() {
     const std::optional<std::string> env_error = validate_database_test_env();
     if (env_error.has_value()) {
         std::cerr << "[SKIP] postgres user repository test precheck skipped: error=" << *env_error << '\n';
-        return nebula::testsupport::database::kDatabaseTestSkipReturnCode;
+        return nebula::testsupport::kTestSkipReturnCode;
     }
 
     const std::vector<nebula::testsupport::TestCase> tests = {
         {"postgres schema check fails when connection unreachable",
-         test_repository_initialize_fails_when_connection_unreachable},
-        {"postgres repository crud with schema ready", test_repository_crud_with_database},
+         test_postgres_schema_check_fails_when_connection_unreachable},
+        {"postgres repository crud", test_postgres_repository_crud},
     };
 
     return nebula::testsupport::run_tests(tests);
@@ -138,5 +138,5 @@ int run_postgres_user_repository_tests() {
 }  // namespace
 
 int main() {
-    return nebula::testsupport::run_main(run_postgres_user_repository_tests);
+    return nebula::testsupport::run_main(run_user_repository_tests);
 }

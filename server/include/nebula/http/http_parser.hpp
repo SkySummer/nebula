@@ -41,7 +41,7 @@ struct ParseResult {
     HttpStatus http_status = HttpStatus::OK;
     std::size_t consumed_bytes = 0;
     HttpRequest request;
-    std::string error;
+    std::string error_message;
 };
 
 ParseResult parse_http_request(std::string_view buffer, std::size_t max_header_bytes, std::size_t max_body_bytes,

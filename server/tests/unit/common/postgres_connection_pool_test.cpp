@@ -17,16 +17,8 @@ using nebula::common::PostgresConnectionPool;
 using nebula::common::PostgresConnectionPoolOptions;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
-using nebula::testsupport::database::load_postgres_pool_test_options;
+using nebula::testsupport::database::require_postgres_pool_test_options;
 using nebula::testsupport::database::validate_database_test_env;
-
-PostgresConnectionPoolOptions require_test_options() {
-    const std::optional<PostgresConnectionPoolOptions> options = load_postgres_pool_test_options();
-    if (!options.has_value()) {
-        nebula::testsupport::fail("postgres test database env should be configured before running tests");
-    }
-    return options.value();
-}
 
 void test_connection_pool_status_to_string_contract() {
     expect_equal(nebula::common::to_string(PostgresConnectionPool::InitializeStatus::Initialized),
@@ -139,7 +131,7 @@ void test_connection_pool_initialize_fails_when_connection_unreachable() {
 }
 
 void test_connection_pool_initialize_rejects_different_options_after_initialized() {
-    const PostgresConnectionPoolOptions base_options = require_test_options();
+    const PostgresConnectionPoolOptions base_options = require_postgres_pool_test_options();
 
     PostgresConnectionPool pool;
 
@@ -161,7 +153,7 @@ void test_connection_pool_initialize_rejects_different_options_after_initialized
 }
 
 void test_connection_pool_acquire_returns_open_connection_after_initialized() {
-    const PostgresConnectionPoolOptions base_options = require_test_options();
+    const PostgresConnectionPoolOptions base_options = require_postgres_pool_test_options();
     PostgresConnectionPool pool;
     const PostgresConnectionPool::InitializeStatus init_status = pool.initialize(base_options);
     expect_equal(init_status, PostgresConnectionPool::InitializeStatus::Initialized,
@@ -179,7 +171,7 @@ void test_connection_pool_acquire_returns_open_connection_after_initialized() {
 }
 
 void test_connection_pool_acquire_times_out_when_exhausted() {
-    const PostgresConnectionPoolOptions base_options = require_test_options();
+    const PostgresConnectionPoolOptions base_options = require_postgres_pool_test_options();
     PostgresConnectionPool pool;
     PostgresConnectionPoolOptions options = base_options;
     options.max_connections = 1;
@@ -217,7 +209,7 @@ void test_connection_pool_acquire_times_out_when_exhausted() {
 }
 
 void test_connection_pool_replenishes_after_unhealthy_connection_discarded_with_short_acquire_timeout() {
-    const PostgresConnectionPoolOptions base_options = require_test_options();
+    const PostgresConnectionPoolOptions base_options = require_postgres_pool_test_options();
     PostgresConnectionPool pool;
     PostgresConnectionPoolOptions options = base_options;
     options.max_connections = 1;
@@ -259,7 +251,7 @@ void test_connection_pool_replenishes_after_unhealthy_connection_discarded_with_
 }
 
 void test_connection_pool_replenishes_after_acquire_discards_unhealthy_available_connection() {
-    const PostgresConnectionPoolOptions base_options = require_test_options();
+    const PostgresConnectionPoolOptions base_options = require_postgres_pool_test_options();
     PostgresConnectionPool pool;
     PostgresConnectionPoolOptions options = base_options;
     options.max_connections = 2;
@@ -303,7 +295,7 @@ void test_connection_pool_replenishes_after_acquire_discards_unhealthy_available
 }
 
 void test_connection_pool_initialize_fails_when_replenish_worker_start_fails() {
-    const PostgresConnectionPoolOptions options = require_test_options();
+    const PostgresConnectionPoolOptions options = require_postgres_pool_test_options();
 
     PostgresConnectionPool pool;
     pool.set_replenish_worker_start_failure_for_test(true);
@@ -325,7 +317,7 @@ int run_postgres_connection_pool_tests() {
     const std::optional<std::string> env_error = validate_database_test_env();
     if (env_error.has_value()) {
         std::cerr << "[SKIP] postgres connection pool test precheck skipped: error=" << *env_error << '\n';
-        return nebula::testsupport::database::kDatabaseTestSkipReturnCode;
+        return nebula::testsupport::kTestSkipReturnCode;
     }
 
     const std::vector<nebula::testsupport::TestCase> tests = {

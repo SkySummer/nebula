@@ -1,6 +1,7 @@
 #include "nebula/http/router.hpp"
 
 #include <atomic>
+#include <format>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -17,7 +18,7 @@ using nebula::http::RouteStatus;
 using nebula::testsupport::expect_equal;
 using nebula::testsupport::expect_true;
 
-nebula::http::Router::Handler plain_text_handler(std::string text) {
+nebula::http::RouteHandler plain_text_handler(std::string text) {
     return [body = std::move(text)](const nebula::http::RouteContext&) {
         return nebula::http::make_plain_text_response(HttpStatus::OK, body);
     };
@@ -34,7 +35,7 @@ void run_concurrent_writer(nebula::http::Router& router, int writer_iterations, 
     }
 
     for (int idx = 0; idx < writer_iterations; ++idx) {
-        if (!router.add_route(HttpMethod::Get, "/dynamic/" + std::to_string(idx), plain_text_handler("ok"))) {
+        if (!router.add_route(HttpMethod::Get, std::format("/dynamic/{}", idx), plain_text_handler("ok"))) {
             failed.store(true, std::memory_order_release);
             return;
         }
@@ -122,6 +123,67 @@ void test_method_not_allowed() {
                  "method not allowed should return allow-list methods");
 }
 
+void test_route_options_require_user_visible_in_resolve() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/me", plain_text_handler("ok"),
+                                 nebula::http::RouteOptions{.require_user = true}),
+                "add route with require_user should succeed");
+
+    HttpRequest request;
+    request.method = HttpMethod::Get;
+    request.path = "/me";
+
+    const nebula::http::RouteResolveResult resolved = router.resolve(request);
+    expect_equal(resolved.status, RouteStatus::Matched, "resolve should match route");
+    expect_true(resolved.options.require_user, "resolve should expose require_user option");
+}
+
+void test_require_user_route_count_tracks_route_lifecycle() {
+    nebula::http::Router router;
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(0),
+                 "new router should have zero require_user routes");
+
+    expect_true(router.add_route(HttpMethod::Get, "/open", plain_text_handler("open")),
+                "add open route should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(0),
+                 "open route should not increase require_user count");
+
+    expect_true(router.add_route(HttpMethod::Get, "/protected", plain_text_handler("protected"),
+                                 nebula::http::RouteOptions{.require_user = true}),
+                "add protected route should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(1),
+                 "protected route should increase require_user count");
+
+    expect_true(router.add_route(HttpMethod::Get, "/protected-alias", "/protected"),
+                "add protected alias should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(2),
+                 "alias should copy require_user option and increase count");
+
+    expect_true(router.mod_route(HttpMethod::Get, "/protected-alias", plain_text_handler("alias-open")),
+                "mod protected alias to open route should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(1),
+                 "mod route should reduce require_user count when option removed");
+
+    expect_true(router.mod_route(HttpMethod::Get, "/open", plain_text_handler("open-protected"),
+                                 nebula::http::RouteOptions{.require_user = true}),
+                "mod open route to protected should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(2),
+                 "mod route should increase require_user count when option added");
+
+    expect_true(router.del_route(HttpMethod::Get, "/protected"), "del protected route should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(1),
+                 "del protected route should decrease require_user count");
+
+    expect_true(router.mod_route(HttpMethod::Get, "/open", "/protected-alias"),
+                "mod open route from open source should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(0),
+                 "mod route from open source should remove require_user option");
+
+    expect_true(router.del_route(HttpMethod::Get, "/protected-alias"), "del open alias route should succeed");
+    expect_equal(router.require_user_route_count(), static_cast<std::size_t>(0),
+                 "del open alias should keep require_user count unchanged");
+}
+
 void test_add_route_no_duplicate() {
     nebula::http::Router router;
     expect_true(router.add_route(HttpMethod::Get, "/echo", plain_text_handler("v1")), "first add should succeed");
@@ -172,6 +234,21 @@ void test_add_route_from_source_path() {
                  "alias should keep handler after source route removed");
     expect_equal(alias_after_source_deleted.response.body, std::string("shared"),
                  "alias response should stay stable after source route removed");
+}
+
+void test_add_route_from_source_copies_route_options() {
+    nebula::http::Router router;
+    expect_true(router.add_route(HttpMethod::Get, "/source", plain_text_handler("shared"),
+                                 nebula::http::RouteOptions{.require_user = true}),
+                "add source route should succeed");
+    expect_true(router.add_route(HttpMethod::Get, "/alias", "/source"), "add alias from source path should succeed");
+
+    HttpRequest request;
+    request.method = HttpMethod::Get;
+    request.path = "/alias";
+    const nebula::http::RouteResolveResult resolved = router.resolve(request);
+    expect_equal(resolved.status, RouteStatus::Matched, "alias route should match");
+    expect_true(resolved.options.require_user, "alias route should copy source require_user option");
 }
 
 void test_add_route_from_source_path_rejected_when_source_missing() {
@@ -276,7 +353,8 @@ void test_add_route_from_source_path_allows_dynamic_key_order_difference() {
     expect_true(router.add_route(HttpMethod::Get, "/users/{id}/posts/{post_id}",
                                  [](const nebula::http::RouteContext& context) {
                                      return nebula::http::make_plain_text_response(
-                                         HttpStatus::OK, context.params.at("id") + "-" + context.params.at("post_id"));
+                                         HttpStatus::OK,
+                                         std::format("{}-{}", context.params.at("id"), context.params.at("post_id")));
                                  }),
                 "add source dynamic route should succeed");
 
@@ -295,7 +373,7 @@ void test_add_route_from_source_path_allows_dynamic_key_order_difference() {
 void test_add_route_reject_empty_handler() {
     nebula::http::Router router;
 
-    expect_true(!router.add_route(HttpMethod::Get, "/empty", nebula::http::Router::Handler{}),
+    expect_true(!router.add_route(HttpMethod::Get, "/empty", nebula::http::RouteHandler{}),
                 "add route with empty handler should fail");
 
     HttpRequest request;
@@ -309,7 +387,7 @@ void test_mod_route_reject_empty_handler() {
     nebula::http::Router router;
     expect_true(router.add_route(HttpMethod::Get, "/echo", plain_text_handler("keep")), "add route should succeed");
 
-    expect_true(!router.mod_route(HttpMethod::Get, "/echo", nebula::http::Router::Handler{}),
+    expect_true(!router.mod_route(HttpMethod::Get, "/echo", nebula::http::RouteHandler{}),
                 "mod route with empty handler should fail");
 
     HttpRequest request;
@@ -522,9 +600,12 @@ int run_router_tests() {
         {"route match", test_route_match},
         {"route not found", test_route_not_found},
         {"method not allowed", test_method_not_allowed},
+        {"route options require user visible in resolve", test_route_options_require_user_visible_in_resolve},
+        {"require user route count tracks route lifecycle", test_require_user_route_count_tracks_route_lifecycle},
         {"add route no duplicate", test_add_route_no_duplicate},
         {"mod route", test_mod_route},
         {"add route from source path", test_add_route_from_source_path},
+        {"add route from source copies route options", test_add_route_from_source_copies_route_options},
         {"add route from source path rejected when source missing",
          test_add_route_from_source_path_rejected_when_source_missing},
         {"mod route from source path", test_mod_route_from_source_path},

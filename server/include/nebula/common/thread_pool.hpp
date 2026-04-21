@@ -27,10 +27,8 @@ public:
 
     template <typename Fn>
     auto submit(Fn&& fn) -> std::future<std::invoke_result_t<Fn>> {
-        using ReturnType = std::invoke_result_t<Fn>;
-
-        auto task = std::make_shared<std::packaged_task<ReturnType()>>(std::forward<Fn>(fn));
-        std::future<ReturnType> future = task->get_future();
+        auto task = std::make_shared<std::packaged_task<std::invoke_result_t<Fn>()>>(std::forward<Fn>(fn));
+        std::future<std::invoke_result_t<Fn>> future = task->get_future();
 
         {
             std::lock_guard lock(mutex_);

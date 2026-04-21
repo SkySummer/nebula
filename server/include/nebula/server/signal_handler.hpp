@@ -37,7 +37,7 @@ private:
 
     sigset_t signal_set_{};
     std::atomic<bool> keep_waiting_ = false;
-    std::thread signal_thread_;
+    std::thread thread_;
     struct sigaction previous_sigint_action_{};
     struct sigaction previous_sigterm_action_{};
     int signal_pipe_read_fd_ = -1;

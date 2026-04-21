@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <iostream>
 #include <optional>
 #include <pqxx/pqxx>
@@ -14,6 +15,8 @@
 #include <unistd.h>
 
 #include "nebula/auth/auth_http.hpp"
+#include "nebula/auth/auth_service.hpp"
+#include "nebula/common/database_utils.hpp"
 #include "nebula/common/json.hpp"
 #include "nebula/common/logger.hpp"
 #include "nebula/http/router.hpp"
@@ -27,24 +30,16 @@ using nebula::common::PostgresConnectionPoolOptions;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_true;
 using nebula::testsupport::write_jwt_secret_file;
-using nebula::testsupport::database::load_postgres_pool_test_options;
+using nebula::testsupport::database::require_postgres_pool_test_options;
 using nebula::testsupport::database::validate_database_test_env;
 using nebula::testsupport::integration::build_runtime;
 using nebula::testsupport::integration::connect_localhost;
 using nebula::testsupport::integration::read_until_close;
 using nebula::testsupport::integration::send_all;
+using nebula::testsupport::integration::ServerThreadGuard;
 using nebula::testsupport::integration::wait_until_server_ready;
-using ServerThreadGuard = nebula::testsupport::integration::ServerThreadGuard;
 
 constexpr std::string_view kIntegrationJwtSecret = "integration_auth_secret_0123456789abcdef";
-
-PostgresConnectionPoolOptions require_database_test_options() {
-    const std::optional<PostgresConnectionPoolOptions> options = load_postgres_pool_test_options();
-    if (!options.has_value()) {
-        nebula::testsupport::fail("postgres test database env should be configured before running tests");
-    }
-    return options.value();
-}
 
 void apply_database_config(nebula::server::ServerConfig& config, const PostgresConnectionPoolOptions& db_config) {
     config.database_host = db_config.host;
@@ -63,10 +58,45 @@ void truncate_users_table(const PostgresConnectionPoolOptions& config) {
     tx.commit();
 }
 
-std::shared_ptr<nebula::http::Router> build_auth_router(const nebula::server::ServerConfig& config) {
-    auto router = std::make_shared<nebula::http::Router>();
-    expect_true(nebula::auth::register_auth_routes(config, router), "register auth routes should succeed");
-    return router;
+struct AuthRouteRuntime {
+    std::shared_ptr<nebula::http::Router> router;
+    std::shared_ptr<nebula::auth::AuthService> auth_service;
+};
+
+void ensure_database_pool_initialized(const nebula::server::ServerConfig& config) {
+    const std::optional<std::string> password = nebula::common::resolve_database_password(config.database_password_env);
+    expect_true(password.has_value(), "database password should be available");
+    if (!password.has_value()) {
+        return;
+    }
+
+    const nebula::common::PostgresConnectionPool::InitializeStatus status =
+        nebula::common::PostgresConnectionPool::instance().initialize(nebula::common::PostgresConnectionPoolOptions{
+            .host = config.database_host,
+            .port = config.database_port,
+            .database = config.database_name,
+            .user = config.database_user,
+            .password = *password,
+            .max_connections = config.database_max_connections,
+            .connect_timeout_ms = config.database_connect_timeout_ms,
+            .acquire_timeout_ms = config.database_acquire_timeout_ms,
+        });
+    expect_true(status == nebula::common::PostgresConnectionPool::InitializeStatus::Initialized ||
+                    status == nebula::common::PostgresConnectionPool::InitializeStatus::AlreadyInitialized,
+                "database pool initialization should succeed");
+}
+
+AuthRouteRuntime build_auth_router(const nebula::server::ServerConfig& config) {
+    AuthRouteRuntime runtime;
+    runtime.router = std::make_shared<nebula::http::Router>();
+    ensure_database_pool_initialized(config);
+    runtime.auth_service = nebula::auth::initialize_auth_service(config);
+    expect_true(runtime.auth_service != nullptr, "initialize auth service should succeed");
+    if (runtime.auth_service != nullptr) {
+        expect_true(nebula::auth::register_auth_routes(runtime.auth_service, runtime.router),
+                    "register auth routes should succeed");
+    }
+    return runtime;
 }
 
 std::string send_single_request(std::uint16_t port, std::string_view request) {
@@ -84,6 +114,19 @@ std::string response_body(std::string_view response) {
         return {};
     }
     return std::string(response.substr(header_end + 4U));
+}
+
+std::string build_http_request(std::string_view method, std::string_view path, std::string_view body = {},
+                               std::string_view content_type = {}, std::string_view access_token = {}) {
+    const std::string content_type_header =
+        content_type.empty() ? std::string() : std::format("Content-Type: {}\r\n", content_type);
+    const std::string auth_header =
+        access_token.empty() ? std::string() : std::format("Authorization: Bearer {}\r\n", access_token);
+    const bool include_content_length = !body.empty() || method == "POST" || method == "PUT" || method == "DELETE";
+    const std::string content_length_header =
+        include_content_length ? std::format("Content-Length: {}\r\n", body.size()) : std::string();
+    return std::format("{} {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{}{}{}\r\n{}", method, path,
+                       content_type_header, auth_header, content_length_header, body);
 }
 
 std::optional<std::string> extract_api_data_string_field(std::string_view json, std::string_view key) {
@@ -120,7 +163,7 @@ std::optional<std::string> extract_api_data_string_field(std::string_view json, 
 }
 
 void test_auth_register_login_me_flow() {
-    const PostgresConnectionPoolOptions db_config = require_database_test_options();
+    const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
 
     const nebula::testsupport::TempDir secret_dir("nebula-http-auth-flow-secret");
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
@@ -131,9 +174,9 @@ void test_auth_register_login_me_flow() {
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
     apply_database_config(config, db_config);
-    auto router = build_auth_router(config);
+    auto auth_runtime = build_auth_router(config);
     truncate_users_table(db_config);
-    auto server = build_runtime(config, router);
+    auto server = build_runtime(config, auth_runtime.router, auth_runtime.auth_service);
 
     std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
@@ -141,21 +184,14 @@ void test_auth_register_login_me_flow() {
 
     const std::string register_body = R"({"username":"Alice_1","password":"password_123"})";
     const std::string register_request =
-        std::string(
-            "POST /api/auth/register HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-            "Connection: close\r\nContent-Length: ") +
-        std::to_string(register_body.size()) + "\r\n\r\n" + register_body;
+        build_http_request("POST", "/api/auth/register", register_body, "application/json");
     const std::string register_response = send_single_request(server.listening_port(), register_request);
     expect_contains(register_response, "HTTP/1.1 200 OK", "register should return 200");
     expect_contains(register_response, R"("code":"ok")", "register should return success code");
     expect_contains(register_response, R"("user_id":1)", "register should return numeric user_id");
 
     const std::string login_body = R"({"username":"Alice_1","password":"password_123"})";
-    const std::string login_request =
-        std::string(
-            "POST /api/auth/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-            "Connection: close\r\nContent-Length: ") +
-        std::to_string(login_body.size()) + "\r\n\r\n" + login_body;
+    const std::string login_request = build_http_request("POST", "/api/auth/login", login_body, "application/json");
     const std::string login_response = send_single_request(server.listening_port(), login_request);
     expect_contains(login_response, "HTTP/1.1 200 OK", "login should return 200");
     expect_contains(login_response, R"("code":"ok")", "login should return success code");
@@ -168,10 +204,7 @@ void test_auth_register_login_me_flow() {
     }
     const std::string& token_value = *token;
 
-    const std::string me_request = std::string(
-                                       "GET /api/auth/me HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
-                                       "Authorization: Bearer ") +
-                                   token_value + "\r\n\r\n";
+    const std::string me_request = build_http_request("GET", "/api/auth/me", {}, {}, token_value);
     const std::string me_response = send_single_request(server.listening_port(), me_request);
     expect_contains(me_response, "HTTP/1.1 200 OK", "me should return 200");
     expect_contains(me_response, R"("code":"ok")", "me should return success code");
@@ -180,7 +213,7 @@ void test_auth_register_login_me_flow() {
 }
 
 void test_auth_register_duplicate_returns_conflict() {
-    const PostgresConnectionPoolOptions db_config = require_database_test_options();
+    const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
 
     const nebula::testsupport::TempDir secret_dir("nebula-http-auth-duplicate-secret");
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
@@ -191,19 +224,16 @@ void test_auth_register_duplicate_returns_conflict() {
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
     apply_database_config(config, db_config);
-    auto router = build_auth_router(config);
+    auto auth_runtime = build_auth_router(config);
     truncate_users_table(db_config);
-    auto server = build_runtime(config, router);
+    auto server = build_runtime(config, auth_runtime.router, auth_runtime.auth_service);
 
     std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
     wait_until_server_ready(server);
 
     const std::string body = R"({"username":"Alice_1","password":"password_123"})";
-    const std::string request = std::string(
-                                    "POST /api/auth/register HTTP/1.1\r\nHost: localhost\r\n"
-                                    "Content-Type: application/json\r\nConnection: close\r\nContent-Length: ") +
-                                std::to_string(body.size()) + "\r\n\r\n" + body;
+    const std::string request = build_http_request("POST", "/api/auth/register", body, "application/json");
     const std::string first_response = send_single_request(server.listening_port(), request);
     expect_contains(first_response, "HTTP/1.1 200 OK", "first register should return 200");
 
@@ -214,7 +244,7 @@ void test_auth_register_duplicate_returns_conflict() {
 }
 
 void test_auth_login_invalid_password_returns_unauthorized() {
-    const PostgresConnectionPoolOptions db_config = require_database_test_options();
+    const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
 
     const nebula::testsupport::TempDir secret_dir("nebula-http-auth-invalid-password-secret");
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
@@ -225,9 +255,9 @@ void test_auth_login_invalid_password_returns_unauthorized() {
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
     apply_database_config(config, db_config);
-    auto router = build_auth_router(config);
+    auto auth_runtime = build_auth_router(config);
     truncate_users_table(db_config);
-    auto server = build_runtime(config, router);
+    auto server = build_runtime(config, auth_runtime.router, auth_runtime.auth_service);
 
     std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
@@ -235,19 +265,12 @@ void test_auth_login_invalid_password_returns_unauthorized() {
 
     const std::string register_body = R"({"username":"Alice_1","password":"password_123"})";
     const std::string register_request =
-        std::string(
-            "POST /api/auth/register HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-            "Connection: close\r\nContent-Length: ") +
-        std::to_string(register_body.size()) + "\r\n\r\n" + register_body;
+        build_http_request("POST", "/api/auth/register", register_body, "application/json");
     const std::string register_response = send_single_request(server.listening_port(), register_request);
     expect_contains(register_response, "HTTP/1.1 200 OK", "register should return 200");
 
     const std::string login_body = R"({"username":"Alice_1","password":"password_124"})";
-    const std::string login_request =
-        std::string(
-            "POST /api/auth/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-            "Connection: close\r\nContent-Length: ") +
-        std::to_string(login_body.size()) + "\r\n\r\n" + login_body;
+    const std::string login_request = build_http_request("POST", "/api/auth/login", login_body, "application/json");
     const std::string login_response = send_single_request(server.listening_port(), login_request);
     expect_contains(login_response, "HTTP/1.1 401 Unauthorized", "invalid password login should return 401");
     expect_contains(login_response, R"("code":"invalid_credentials")",
@@ -255,7 +278,7 @@ void test_auth_login_invalid_password_returns_unauthorized() {
 }
 
 void test_auth_me_missing_token_returns_unauthorized() {
-    const PostgresConnectionPoolOptions db_config = require_database_test_options();
+    const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
 
     const nebula::testsupport::TempDir secret_dir("nebula-http-auth-me-missing-token-secret");
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
@@ -266,9 +289,9 @@ void test_auth_me_missing_token_returns_unauthorized() {
     config.worker_thread_count = 2;
     config.auth_jwt_secret_path = secret_path;
     apply_database_config(config, db_config);
-    auto router = build_auth_router(config);
+    auto auth_runtime = build_auth_router(config);
     truncate_users_table(db_config);
-    auto server = build_runtime(config, router);
+    auto server = build_runtime(config, auth_runtime.router, auth_runtime.auth_service);
 
     std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
@@ -283,7 +306,7 @@ void test_auth_me_missing_token_returns_unauthorized() {
 void test_auth_me_expired_token_returns_unauthorized() {
     using namespace std::chrono_literals;
 
-    const PostgresConnectionPoolOptions db_config = require_database_test_options();
+    const PostgresConnectionPoolOptions db_config = require_postgres_pool_test_options();
 
     const nebula::testsupport::TempDir secret_dir("nebula-http-auth-expired-token-secret");
     const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
@@ -295,9 +318,9 @@ void test_auth_me_expired_token_returns_unauthorized() {
     config.auth_jwt_secret_path = secret_path;
     config.auth_access_token_ttl_s = 1;
     apply_database_config(config, db_config);
-    auto router = build_auth_router(config);
+    auto auth_runtime = build_auth_router(config);
     truncate_users_table(db_config);
-    auto server = build_runtime(config, router);
+    auto server = build_runtime(config, auth_runtime.router, auth_runtime.auth_service);
 
     std::thread server_thread([&server]() { server.run(); });
     ServerThreadGuard server_guard(server, server_thread);
@@ -305,10 +328,7 @@ void test_auth_me_expired_token_returns_unauthorized() {
 
     const std::string register_body = R"({"username":"Alice_1","password":"password_123"})";
     const std::string register_request =
-        std::string(
-            "POST /api/auth/register HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-            "Connection: close\r\nContent-Length: ") +
-        std::to_string(register_body.size()) + "\r\n\r\n" + register_body;
+        build_http_request("POST", "/api/auth/register", register_body, "application/json");
     const std::string register_response = send_single_request(server.listening_port(), register_request);
     expect_contains(register_response, "HTTP/1.1 200 OK", "register should return 200");
 
@@ -322,10 +342,7 @@ void test_auth_me_expired_token_returns_unauthorized() {
 
     std::this_thread::sleep_for(2s);
 
-    const std::string me_request = std::string(
-                                       "GET /api/auth/me HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
-                                       "Authorization: Bearer ") +
-                                   token_value + "\r\n\r\n";
+    const std::string me_request = build_http_request("GET", "/api/auth/me", {}, {}, token_value);
     const std::string me_response = send_single_request(server.listening_port(), me_request);
     expect_contains(me_response, "HTTP/1.1 401 Unauthorized", "me with expired token should return 401");
     expect_contains(me_response, R"("code":"token_expired")", "expired token should return token_expired code");
@@ -338,7 +355,7 @@ int run_http_server_auth_db_integration_tests() {
     const std::optional<std::string> env_error = validate_database_test_env();
     if (env_error.has_value()) {
         std::cerr << "[SKIP] http server auth db integration precheck skipped: error=" << *env_error << '\n';
-        return nebula::testsupport::database::kDatabaseTestSkipReturnCode;
+        return nebula::testsupport::kTestSkipReturnCode;
     }
 
     const std::vector<nebula::testsupport::TestCase> tests = {

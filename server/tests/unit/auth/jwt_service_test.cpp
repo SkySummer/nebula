@@ -1,5 +1,6 @@
 #include "nebula/auth/jwt_service.hpp"
 
+#include <format>
 #include <limits>
 #include <optional>
 #include <string>
@@ -97,7 +98,7 @@ void test_jwt_verify_accepts_token_with_extra_claims() {
     const std::string header = nebula::common::base64url_encode(R"({"alg":"HS256","typ":"JWT"})");
     const std::string payload_json = R"({"sub":"1","iat":1000,"exp":1060,"jti":"trace-1","aud":"web-client"})";
     const std::string payload = nebula::common::base64url_encode(payload_json);
-    const std::string signing_input = header + "." + payload;
+    const std::string signing_input = std::format("{}.{}", header, payload);
 
     const std::optional<std::string> signature = hmac_sha256(secret, signing_input);
     expect_true(signature.has_value(), "test token signature should be generated");
@@ -105,7 +106,7 @@ void test_jwt_verify_accepts_token_with_extra_claims() {
         nebula::testsupport::fail("test token signature should be generated");
     }
 
-    const std::string token = signing_input + "." + nebula::common::base64url_encode(*signature);
+    const std::string token = std::format("{}.{}", signing_input, nebula::common::base64url_encode(*signature));
     TokenClaims claims;
     expect_equal(jwt.verify_access_token(token, claims, 1020), JwtVerifyResult::Valid,
                  "verify_access_token should accept payload with extra claims");

@@ -250,8 +250,8 @@ void test_parse_duplicate_header_rejected() {
 
 void test_parse_duplicate_content_length_same_value() {
     const std::string body = "ok";
-    const std::string raw =
-        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nContent-Length: 02\r\n\r\n" + body;
+    const std::string raw = std::format(
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nContent-Length: 02\r\n\r\n{}", body);
     const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, kMaxRequestTarget);
     expect_equal(parsed.status, ParseStatus::Complete, "same content-length should parse");
     expect_equal(parsed.request.body, body, "body should parse when content-length matches");
@@ -322,7 +322,7 @@ void test_parse_context_resets_after_complete_for_pipeline() {
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
         "5\r\nhello\r\n0\r\n\r\n";
     const std::string second = "GET /next HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    const std::string combined = first + second;
+    const std::string combined = std::format("{}{}", first, second);
 
     nebula::http::HttpRequestParseContext context;
     const auto first_parsed = nebula::http::parse_http_request(combined, kMaxHeader, kMaxBody,
@@ -419,7 +419,7 @@ void test_parse_chunked_consumed_bytes_for_pipeline() {
     const std::string first =
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
     const std::string second = "GET /b HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    const std::string raw = first + second;
+    const std::string raw = std::format("{}{}", first, second);
 
     const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, kMaxRequestTarget);
     expect_equal(parsed.status, ParseStatus::Complete, "chunked request should parse before pipelined request");
@@ -430,7 +430,7 @@ void test_parse_chunked_consumed_bytes_for_pipeline() {
 void test_parse_consumed_bytes_for_pipeline() {
     const std::string first = "GET /a HTTP/1.1\r\nHost: localhost\r\n\r\n";
     const std::string second = "GET /b HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    const std::string raw = first + second;
+    const std::string raw = std::format("{}{}", first, second);
 
     const auto parsed = nebula::http::parse_http_request(raw, kMaxHeader, kMaxBody, kMaxRequestTarget);
     expect_equal(parsed.status, ParseStatus::Complete, "first request should parse");

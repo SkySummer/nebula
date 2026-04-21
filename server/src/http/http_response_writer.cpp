@@ -4,8 +4,10 @@
 #include <cctype>
 #include <format>
 #include <string_view>
+#include <utility>
 
 namespace nebula::http {
+
 namespace {
 
 bool iequals_ascii(std::string_view lhs, std::string_view rhs) {
@@ -65,18 +67,18 @@ HttpResponse make_plain_text_response(HttpStatus status, std::string body) {
     return response;
 }
 
-HttpResponse make_error_response(HttpStatus status, std::string body) {
-    if (body.empty()) {
-        body = to_string(status);
-    }
-    return make_plain_text_response(status, std::move(body));
-}
-
 HttpResponse make_json_response(HttpStatus status, const common::JsonValue& body) {
     HttpResponse response;
     response.status = status;
     response.headers.emplace("Content-Type", "application/json; charset=utf-8");
     response.body = common::dump_json(body);
+    return response;
+}
+
+HttpResponse make_redirect_response(HttpStatus status, std::string location) {
+    HttpResponse response;
+    response.status = status;
+    response.headers.emplace("Location", std::move(location));
     return response;
 }
 
@@ -86,6 +88,16 @@ HttpResponse make_api_success_response(common::JsonValue data) {
     body.emplace("message", common::JsonValue("success"));
     body.emplace("data", std::move(data));
     return make_json_response(HttpStatus::OK, common::JsonValue(std::move(body)));
+}
+
+HttpResponse make_api_error_response(HttpStatus status) {
+    const HttpErrorInfo error_info = to_error_info(status);
+    return make_api_error_response(error_info.status, error_info.code, error_info.message);
+}
+
+HttpResponse make_api_error_response(HttpStatus status, std::string_view message) {
+    const HttpErrorInfo error_info = to_error_info(status);
+    return make_api_error_response(error_info.status, error_info.code, message.empty() ? error_info.message : message);
 }
 
 HttpResponse make_api_error_response(HttpStatus status, std::string_view code, std::string_view message) {

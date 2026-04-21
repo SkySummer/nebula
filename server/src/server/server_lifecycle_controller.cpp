@@ -33,7 +33,7 @@ StopRequestTransition ServerLifecycleController::request_stop() noexcept {
         if (observed_state == LifecycleState::Starting || observed_state == LifecycleState::Running) {
             if (state_.compare_exchange_weak(observed_state, LifecycleState::Stopping)) {
                 prestart_stop_requested_.store(false);
-                return StopRequestTransition{
+                return {
                     .decision = StopRequestDecision::EnterStopping,
                     .state = observed_state,
                     .next_state = LifecycleState::Stopping,
@@ -49,14 +49,14 @@ StopRequestTransition ServerLifecycleController::request_stop() noexcept {
                 observed_state = reloaded_state;
                 continue;
             }
-            return StopRequestTransition{
+            return {
                 .decision = StopRequestDecision::CancelNextStart,
                 .state = observed_state,
                 .next_state = LifecycleState::Idle,
             };
         }
 
-        return StopRequestTransition{
+        return {
             .decision = StopRequestDecision::Ignored,
             .state = observed_state,
             .next_state = observed_state,

@@ -322,7 +322,7 @@ void SignalHandler::start(std::function<void()> stop_callback) {
         init_signal_set();
     }
 
-    if (!signal_set_ready_ || signal_thread_.joinable()) {
+    if (!signal_set_ready_ || thread_.joinable()) {
         return;
     }
 
@@ -337,7 +337,7 @@ void SignalHandler::start(std::function<void()> stop_callback) {
     stop_callback_ = std::move(stop_callback);
     keep_waiting_.store(true);
     try {
-        signal_thread_ = std::thread(&SignalHandler::wait_loop, this);
+        thread_ = std::thread(&SignalHandler::wait_loop, this);
     } catch (const std::exception& e) {
         keep_waiting_.store(false);
         uninstall_signal_handlers();
@@ -360,8 +360,8 @@ void SignalHandler::start(std::function<void()> stop_callback) {
 void SignalHandler::stop() noexcept {
     keep_waiting_.store(false);
     wake_wait_loop();
-    if (signal_thread_.joinable()) {
-        signal_thread_.join();
+    if (thread_.joinable()) {
+        thread_.join();
     }
     uninstall_signal_handlers();
     close_signal_pipe();

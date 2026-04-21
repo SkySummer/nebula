@@ -3,6 +3,7 @@
 #include <array>
 #include <cerrno>
 #include <cstring>
+#include <format>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -25,7 +26,7 @@ std::string format_peer(const sockaddr_in& addr) {
     if (result == nullptr) {
         return "unknown:0";
     }
-    return std::string(result) + ":" + std::to_string(ntohs(addr.sin_port));
+    return std::format("{}:{}", result, ntohs(addr.sin_port));
 }
 
 }  // namespace

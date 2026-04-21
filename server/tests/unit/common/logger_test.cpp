@@ -85,7 +85,7 @@ void test_to_string_covers_domains() {
     expect_equal(std::string(nebula::common::to_string(LogDomain::Common)), std::string("common"), "common text");
     expect_equal(std::string(nebula::common::to_string(LogDomain::Http)), std::string("http"), "http text");
     expect_equal(std::string(nebula::common::to_string(LogDomain::Server)), std::string("server"), "server text");
-    expect_equal(std::string(nebula::common::to_string(LogDomain::User)), std::string("user"), "user text");
+    expect_equal(std::string(nebula::common::to_string(LogDomain::Storage)), std::string("storage"), "storage text");
     expect_equal(std::string(nebula::common::to_string(LogDomain::Test)), std::string("test"), "test text");
 }
 

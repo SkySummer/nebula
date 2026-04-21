@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <exception>
+#include <format>
 #include <mutex>
 #include <string_view>
 #include <thread>
@@ -90,15 +91,23 @@ std::unique_ptr<pqxx::connection> create_connection(const PostgresConnectionPool
 std::string build_connection_info(const PostgresConnectionPoolOptions& options) {
     const std::int64_t timeout_seconds = std::clamp<std::int64_t>(options.connect_timeout_ms / 1000, 1, 60);
 
-    std::string info;
-    info.reserve(256);
-    info.append("host=").append(quote_conninfo_value(options.host));
-    info.append(" port=").append(std::to_string(options.port));
-    info.append(" dbname=").append(quote_conninfo_value(options.database));
-    info.append(" user=").append(quote_conninfo_value(options.user));
-    info.append(" password=").append(quote_conninfo_value(options.password));
-    info.append(" connect_timeout=").append(std::to_string(timeout_seconds));
-    return info;
+    return std::format("host={} port={} dbname={} user={} password={} connect_timeout={}",
+                       quote_conninfo_value(options.host), options.port, quote_conninfo_value(options.database),
+                       quote_conninfo_value(options.user), quote_conninfo_value(options.password), timeout_seconds);
+}
+
+std::optional<PostgresConnectionPool::ConnectionLease> acquire_connection_lease(std::string_view operation) {
+    auto& pool = PostgresConnectionPool::instance();
+    PostgresConnectionPool::AcquireResult acquire_result = pool.acquire_connection();
+    if (acquire_result.status == PostgresConnectionPool::AcquireStatus::Acquired && acquire_result.lease.has_value()) {
+        return std::move(acquire_result.lease);
+    }
+
+    Logger::instance()
+        .error(LogDomain::Common, "postgres connection lease acquire failed")
+        .field("operation", operation)
+        .field("error", to_string(acquire_result.status));
+    return std::nullopt;
 }
 
 std::string_view to_string(PostgresConnectionPool::InitializeStatus status) noexcept {
@@ -519,7 +528,7 @@ bool PostgresConnectionPool::ensure_replenish_worker_locked(const std::shared_pt
     }
 
     try {
-        state->replenish_worker = std::jthread([state]() { replenish_worker_loop(state); });
+        state->replenish_worker = std::jthread(replenish_worker_loop, state);
         return true;
     } catch (const std::exception& e) {
         Logger::instance()

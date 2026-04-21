@@ -29,9 +29,14 @@ inline sockaddr* as_sockaddr(sockaddr_in& addr) {
 
 }  // namespace detail
 
-inline nebula::server::HttpServerRuntime build_runtime(nebula::server::ServerConfig config,
-                                                       std::shared_ptr<nebula::http::Router> router) {
-    return nebula::server::HttpServerBuilder().with_config(std::move(config)).with_router(std::move(router)).build();
+inline nebula::server::HttpServerRuntime build_runtime(
+    nebula::server::ServerConfig config, std::shared_ptr<nebula::http::Router> router,
+    std::shared_ptr<nebula::auth::AuthService> auth_service = nullptr) {
+    return nebula::server::HttpServerBuilder()
+        .with_config(std::move(config))
+        .with_router(std::move(router))
+        .with_auth_service(std::move(auth_service))
+        .build();
 }
 
 inline bool send_all(int fd, std::string_view data) {
@@ -99,7 +104,7 @@ inline void wait_until_server_ready(nebula::server::HttpServerRuntime& server) {
         std::this_thread::sleep_for(10ms);
     }
 
-    nebula::testsupport::fail("server did not become ready in time");
+    fail("server did not become ready in time");
 }
 
 class ServerThreadGuard {

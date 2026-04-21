@@ -27,6 +27,8 @@
 
 namespace nebula::testsupport {
 
+inline constexpr int kTestSkipReturnCode = 77;
+
 [[noreturn]] inline void fail(std::string_view message) {
     throw std::runtime_error(std::string(message));
 }
@@ -83,15 +85,15 @@ public:
         }
     }
 
-    TempDir(const TempDir&) = delete;
-    TempDir& operator=(const TempDir&) = delete;
-    TempDir(TempDir&&) = default;
-    TempDir& operator=(TempDir&&) = default;
-
     ~TempDir() noexcept {
         std::error_code ec;
         std::filesystem::remove_all(path_, ec);
     }
+
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = default;
+    TempDir& operator=(TempDir&&) = default;
 
     [[nodiscard]] const std::filesystem::path& path() const {
         return path_;
@@ -152,7 +154,10 @@ inline void write_jwt_secret_file(const std::filesystem::path& path, std::string
 class ArgvBuilder {
 public:
     explicit ArgvBuilder(std::vector<std::string> args) : storage_(std::move(args)) {
-        rebuild();
+        argv_.reserve(storage_.size());
+        for (std::string& item : storage_) {
+            argv_.push_back(item.data());
+        }
     }
 
     [[nodiscard]] std::span<char*> span() {
@@ -160,14 +165,6 @@ public:
     }
 
 private:
-    void rebuild() {
-        argv_.clear();
-        argv_.reserve(storage_.size());
-        for (std::string& item : storage_) {
-            argv_.push_back(item.data());
-        }
-    }
-
     std::vector<std::string> storage_;
     std::vector<char*> argv_;
 };

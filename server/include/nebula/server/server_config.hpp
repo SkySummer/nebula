@@ -52,9 +52,14 @@ struct ServerConfig {
     std::size_t database_max_connections = 8;
     std::int64_t database_connect_timeout_ms = 3000;
     std::int64_t database_acquire_timeout_ms = 3000;
-};
 
-void normalize_server_thread_counts(ServerConfig& config);
+    std::filesystem::path storage_root_dir = "runtime/files";
+    std::int64_t storage_upload_session_ttl_s = 86400;
+    std::int64_t storage_max_file_bytes = 64LL * 1024 * 1024;
+
+    ServerConfig& normalize() &;
+    ServerConfig&& normalize() &&;
+};
 
 enum class ServerConfigSource : std::uint8_t {
     Default,

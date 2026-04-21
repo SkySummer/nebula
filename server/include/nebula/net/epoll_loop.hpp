@@ -15,7 +15,6 @@ public:
 
     EpollLoop(const EpollLoop&) = delete;
     EpollLoop& operator=(const EpollLoop&) = delete;
-
     EpollLoop(EpollLoop&& other) noexcept;
     EpollLoop& operator=(EpollLoop&& other) noexcept;
 

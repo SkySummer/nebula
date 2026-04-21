@@ -1,77 +1,39 @@
 #include "nebula/auth/auth_http.hpp"
 
 #include <cctype>
-#include <cstdlib>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include "nebula/auth/auth_service.hpp"
-#include "nebula/auth/jwt_secret_store.hpp"
+#include "nebula/auth/user_repository.hpp"
 #include "nebula/common/json.hpp"
 #include "nebula/common/logger.hpp"
 #include "nebula/common/postgres_connection_pool.hpp"
 #include "nebula/common/string_utils.hpp"
 #include "nebula/http/http_response_writer.hpp"
 #include "nebula/http/router.hpp"
-#include "nebula/user/user_repository.hpp"
 
 namespace nebula::auth {
 
 namespace {
 
-bool starts_with_ignore_case_ascii(std::string_view text, std::string_view prefix) {
-    if (text.size() < prefix.size()) {
-        return false;
-    }
-    for (std::size_t idx = 0; idx < prefix.size(); ++idx) {
-        const auto left = static_cast<unsigned char>(text[idx]);
-        const auto right = static_cast<unsigned char>(prefix[idx]);
-        if (std::tolower(left) != std::tolower(right)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-common::JsonValue user_json(const user::UserInfo& user) {
+common::JsonValue make_user_json(std::int64_t user_id, const std::string& username, std::int64_t created_at_s) {
     common::JsonObject object;
-    object.emplace("user_id", common::JsonValue(user.user_id));
-    object.emplace("username", common::JsonValue(user.username));
-    object.emplace("created_at_s", common::JsonValue(user.created_at_s));
+    object.emplace("user_id", common::JsonValue(user_id));
+    object.emplace("username", common::JsonValue(username));
+    object.emplace("created_at_s", common::JsonValue(created_at_s));
     return common::JsonValue(std::move(object));
 }
 
-http::HttpResponse map_auth_error(AuthErrorCode error) {
-    switch (error) {
-        case AuthErrorCode::InvalidUsername:
-            return http::make_api_error_response(http::HttpStatus::BadRequest, "invalid_username", "invalid username");
-        case AuthErrorCode::InvalidPassword:
-            return http::make_api_error_response(http::HttpStatus::BadRequest, "invalid_password", "invalid password");
-        case AuthErrorCode::UsernameAlreadyExists:
-            return http::make_api_error_response(http::HttpStatus::Conflict, "username_already_exists",
-                                                 "username already exists");
-        case AuthErrorCode::InvalidCredentials:
-            return http::make_api_error_response(http::HttpStatus::Unauthorized, "invalid_credentials",
-                                                 "invalid credentials");
-        case AuthErrorCode::TokenMissing:
-            return http::make_api_error_response(http::HttpStatus::Unauthorized, "token_missing",
-                                                 "missing bearer token");
-        case AuthErrorCode::TokenInvalid:
-            return http::make_api_error_response(http::HttpStatus::Unauthorized, "token_invalid",
-                                                 "invalid access token");
-        case AuthErrorCode::TokenExpired:
-            return http::make_api_error_response(http::HttpStatus::Unauthorized, "token_expired",
-                                                 "access token expired");
-        case AuthErrorCode::InternalError:
-            return http::make_api_error_response(http::HttpStatus::InternalServerError, "internal_error",
-                                                 "internal error");
-        case AuthErrorCode::Ok:
-            break;
-    }
-    return http::make_api_error_response(http::HttpStatus::InternalServerError, "internal_error", "internal error");
+common::JsonValue user_json(const UserInfo& user) {
+    return make_user_json(user.user_id, user.username, user.created_at_s);
+}
+
+common::JsonValue user_json(const http::AuthenticatedUser& user) {
+    return make_user_json(user.user_id, user.username, user.created_at_s);
 }
 
 std::optional<std::pair<std::string, std::string>> parse_credentials(std::string_view body) {
@@ -106,6 +68,20 @@ std::optional<std::pair<std::string, std::string>> parse_credentials(std::string
     return std::pair<std::string, std::string>{*username, *password};
 }
 
+bool starts_with_ignore_case_ascii(std::string_view text, std::string_view prefix) {
+    if (text.size() < prefix.size()) {
+        return false;
+    }
+    for (std::size_t idx = 0; idx < prefix.size(); ++idx) {
+        const auto left = static_cast<unsigned char>(text[idx]);
+        const auto right = static_cast<unsigned char>(prefix[idx]);
+        if (std::tolower(left) != std::tolower(right)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string extract_bearer_token(const http::HeaderMap& headers) {
     const auto auth_it = headers.find("authorization");
     if (auth_it == headers.end()) {
@@ -121,8 +97,8 @@ std::string extract_bearer_token(const http::HeaderMap& headers) {
 }
 
 bool register_route(const std::shared_ptr<http::Router>& router, http::HttpMethod method, std::string_view path,
-                    http::Router::Handler handler) {
-    const bool added = router->add_route(method, std::string(path), std::move(handler));
+                    http::RouteHandler handler, http::RouteOptions options = {}) {
+    const bool added = router->add_route(method, std::string(path), std::move(handler), options);
     if (added) {
         return true;
     }
@@ -134,16 +110,6 @@ bool register_route(const std::shared_ptr<http::Router>& router, http::HttpMetho
         .field("error", "register_route_failed")
         .field("decision", "exit_process");
     return false;
-}
-
-std::optional<std::string> resolve_database_password(const server::ServerConfig& config) {
-    if (!config.database_password_env.empty()) {
-        const char* env_value = std::getenv(config.database_password_env.c_str());
-        if (env_value != nullptr && *env_value != '\0') {
-            return std::string(env_value);
-        }
-    }
-    return std::nullopt;
 }
 
 http::HttpResponse handle_register(const std::shared_ptr<AuthService>& auth_service,
@@ -164,7 +130,7 @@ http::HttpResponse handle_register(const std::shared_ptr<AuthService>& auth_serv
             .field("username", credentials->first)
             .field("error", to_string(registered.error))
             .field("decision", "reject_request");
-        return map_auth_error(registered.error);
+        return make_auth_error_response(registered.error);
     }
 
     common::Logger::instance()
@@ -188,14 +154,14 @@ http::HttpResponse handle_login(const std::shared_ptr<AuthService>& auth_service
         return http::make_api_error_response(http::HttpStatus::BadRequest, "invalid_request", "invalid request body");
     }
 
-    const LoginResult login = auth_service->login(credentials->first, credentials->second);
+    const LoginResult login = auth_service->login_user(credentials->first, credentials->second);
     if (login.error != AuthErrorCode::Ok) {
         common::Logger::instance()
             .warn(common::LogDomain::Auth, "login rejected")
             .field("username", credentials->first)
             .field("error", to_string(login.error))
             .field("decision", "reject_request");
-        return map_auth_error(login.error);
+        return make_auth_error_response(login.error);
     }
 
     common::Logger::instance()
@@ -210,95 +176,106 @@ http::HttpResponse handle_login(const std::shared_ptr<AuthService>& auth_service
 }
 
 http::HttpResponse handle_me(const std::shared_ptr<AuthService>& auth_service, const http::RouteContext& context) {
-    const std::string token = extract_bearer_token(context.request.headers);
-    const AuthenticateResult authenticated = auth_service->authenticate_access_token(token);
-    if (authenticated.error != AuthErrorCode::Ok) {
-        common::Logger::instance()
-            .warn(common::LogDomain::Auth, "access token verification failed")
-            .field("error", to_string(authenticated.error))
-            .field("decision", "reject_request");
-        return map_auth_error(authenticated.error);
+    if (auth_service == nullptr) {
+        return http::make_api_error_response(http::HttpStatus::InternalServerError);
     }
+    if (!context.user.has_value()) {
+        common::Logger::instance()
+            .error(common::LogDomain::Auth, "authenticated route missing user context")
+            .field("path", context.request.path)
+            .field("error", "missing_authenticated_user")
+            .field("decision", "return_internal_error");
+        return http::make_api_error_response(http::HttpStatus::InternalServerError);
+    }
+
+    const http::AuthenticatedUser& user = *context.user;
 
     common::Logger::instance()
         .info(common::LogDomain::Auth, "access token verified")
-        .field("user_id", authenticated.user.user_id)
-        .field("username", authenticated.user.username);
+        .field("user_id", user.user_id)
+        .field("username", user.username);
     common::JsonObject data;
-    data.emplace("user", user_json(authenticated.user));
+    data.emplace("user", user_json(user));
     return http::make_api_success_response(common::JsonValue(std::move(data)));
 }
 
 }  // namespace
 
-bool register_auth_routes(const server::ServerConfig& config, const std::shared_ptr<http::Router>& router) {
-    if (router == nullptr) {
+bool register_auth_routes(const std::shared_ptr<AuthService>& auth_service,
+                          const std::shared_ptr<http::Router>& router) {
+    if (router == nullptr || auth_service == nullptr) {
         return false;
     }
 
-    const std::optional<std::string> jwt_secret = load_or_create_jwt_secret(config.auth_jwt_secret_path);
-    if (!jwt_secret.has_value()) {
-        return false;
-    }
-
-    const std::optional<std::string> password = resolve_database_password(config);
-    if (!password.has_value()) {
+    if (!common::PostgresConnectionPool::instance().is_initialized()) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Auth, "auth database password resolve failed")
-            .field("error", "database_password_env_not_set")
-            .field("password_env", config.database_password_env)
+            .fatal(common::LogDomain::Auth, "register auth routes failed")
+            .field("error", "pool_not_initialized")
             .field("decision", "exit_process");
         return false;
     }
-
-    const common::PostgresConnectionPool::InitializeStatus pool_status =
-        common::PostgresConnectionPool::instance().initialize(common::PostgresConnectionPoolOptions{
-            .host = config.database_host,
-            .port = config.database_port,
-            .database = config.database_name,
-            .user = config.database_user,
-            .password = *password,
-            .max_connections = config.database_max_connections,
-            .connect_timeout_ms = config.database_connect_timeout_ms,
-            .acquire_timeout_ms = config.database_acquire_timeout_ms,
-        });
-    if (pool_status != common::PostgresConnectionPool::InitializeStatus::Initialized &&
-        pool_status != common::PostgresConnectionPool::InitializeStatus::AlreadyInitialized) {
+    if (!check_user_schema_ready()) {
         common::Logger::instance()
-            .fatal(common::LogDomain::Auth, "auth postgres pool init failed")
-            .field("error", to_string(pool_status))
-            .field("decision", "exit_process");
-        return false;
-    }
-
-    if (!user::check_user_schema_ready()) {
-        common::Logger::instance()
-            .fatal(common::LogDomain::Auth, "auth user schema check failed")
+            .fatal(common::LogDomain::Auth, "register auth routes failed")
             .field("error", "user_schema_not_ready")
             .field("decision", "exit_process");
         return false;
     }
 
-    auto shared_auth_service = std::make_shared<AuthService>(
-        PasswordHasher({.iterations = config.auth_password_hash_iterations}),
-        JwtService({.secret = *jwt_secret, .access_token_ttl_s = config.auth_access_token_ttl_s}));
-
     if (!register_route(router, http::HttpMethod::Post, "/api/auth/register",
-                        std::bind_front(handle_register, shared_auth_service))) {
+                        std::bind_front(handle_register, auth_service))) {
         return false;
     }
 
     if (!register_route(router, http::HttpMethod::Post, "/api/auth/login",
-                        std::bind_front(handle_login, shared_auth_service))) {
+                        std::bind_front(handle_login, auth_service))) {
         return false;
     }
 
-    if (!register_route(router, http::HttpMethod::Get, "/api/auth/me",
-                        std::bind_front(handle_me, shared_auth_service))) {
+    if (!register_route(router, http::HttpMethod::Get, "/api/auth/me", std::bind_front(handle_me, auth_service),
+                        http::RouteOptions{.require_user = true})) {
         return false;
     }
 
     return true;
+}
+
+http::HttpResponse make_auth_error_response(AuthErrorCode error) {
+    switch (error) {
+        case AuthErrorCode::InvalidUsername:
+            return http::make_api_error_response(http::HttpStatus::BadRequest, "invalid_username", "invalid username");
+        case AuthErrorCode::InvalidPassword:
+            return http::make_api_error_response(http::HttpStatus::BadRequest, "invalid_password", "invalid password");
+        case AuthErrorCode::UsernameAlreadyExists:
+            return http::make_api_error_response(http::HttpStatus::Conflict, "username_already_exists",
+                                                 "username already exists");
+        case AuthErrorCode::InvalidCredentials:
+            return http::make_api_error_response(http::HttpStatus::Unauthorized, "invalid_credentials",
+                                                 "invalid credentials");
+        case AuthErrorCode::TokenMissing:
+            return http::make_api_error_response(http::HttpStatus::Unauthorized, "token_missing",
+                                                 "missing bearer token");
+        case AuthErrorCode::TokenInvalid:
+            return http::make_api_error_response(http::HttpStatus::Unauthorized, "token_invalid",
+                                                 "invalid access token");
+        case AuthErrorCode::TokenExpired:
+            return http::make_api_error_response(http::HttpStatus::Unauthorized, "token_expired",
+                                                 "access token expired");
+        case AuthErrorCode::InternalError:
+            return http::make_api_error_response(http::HttpStatus::InternalServerError);
+        case AuthErrorCode::Ok:
+            break;
+    }
+    return http::make_api_error_response(http::HttpStatus::InternalServerError);
+}
+
+AuthenticateResult authenticate_http_request(const std::shared_ptr<AuthService>& auth_service,
+                                             const http::HeaderMap& headers) {
+    if (auth_service == nullptr) {
+        return {};
+    }
+    const std::string token = extract_bearer_token(headers);
+    return auth_service->authenticate_access_token(token);
 }
 
 }  // namespace nebula::auth

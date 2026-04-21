@@ -321,12 +321,15 @@ JwtSecretPersistResult persist_jwt_secret_file(const std::filesystem::path& path
 
 std::optional<std::string> load_or_create_jwt_secret(const std::filesystem::path& path) {
     std::string secret;
+
     const JwtSecretReadResult read_result = read_jwt_secret_file(path, false, secret);
-    if (read_result == JwtSecretReadResult::Loaded) {
-        return secret;
-    }
-    if (read_result == JwtSecretReadResult::Failed) {
-        return std::nullopt;
+    switch (read_result) {
+        case JwtSecretReadResult::Loaded:
+            return secret;
+        case JwtSecretReadResult::NotFound:
+            break;
+        case JwtSecretReadResult::Failed:
+            return std::nullopt;
     }
 
     std::optional<GeneratedJwtSecret> generated = generate_jwt_secret_value(path);
@@ -335,11 +338,13 @@ std::optional<std::string> load_or_create_jwt_secret(const std::filesystem::path
     }
 
     const JwtSecretPersistResult persist_result = persist_jwt_secret_file(path, generated->persisted_secret_base64);
-    if (persist_result == JwtSecretPersistResult::Persisted) {
-        return generated->secret;
-    }
-    if (persist_result == JwtSecretPersistResult::Failed) {
-        return std::nullopt;
+    switch (persist_result) {
+        case JwtSecretPersistResult::Persisted:
+            return generated->secret;
+        case JwtSecretPersistResult::AlreadyExists:
+            break;
+        case JwtSecretPersistResult::Failed:
+            return std::nullopt;
     }
 
     secret.clear();

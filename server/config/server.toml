@@ -40,3 +40,8 @@ password_env = "NEBULA_DATABASE_PASSWORD"
 max_connections = 8
 connect_timeout_ms = 3000
 acquire_timeout_ms = 3000
+
+[storage]
+root_dir = "runtime/files"
+upload_session_ttl_s = 86400
+max_file_mb = 64

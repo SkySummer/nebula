@@ -156,8 +156,8 @@ std::string_view to_string(LogDomain domain) noexcept {
             return "http";
         case LogDomain::Server:
             return "server";
-        case LogDomain::User:
-            return "user";
+        case LogDomain::Storage:
+            return "storage";
         case LogDomain::Test:
             return "test";
     }

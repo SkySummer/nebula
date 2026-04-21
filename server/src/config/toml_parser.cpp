@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <format>
 #include <utility>
 
 #include "nebula/common/string_utils.hpp"
@@ -147,13 +148,7 @@ std::string build_full_key(std::string_view section, std::string_view key) {
     if (section.empty()) {
         return std::string(key);
     }
-
-    std::string full_key;
-    full_key.reserve(section.size() + 1U + key.size());
-    full_key.append(section);
-    full_key.push_back('.');
-    full_key.append(key);
-    return full_key;
+    return std::format("{}.{}", section, key);
 }
 
 bool parse_section_line(std::string_view trimmed, std::string& section, std::string& error) {

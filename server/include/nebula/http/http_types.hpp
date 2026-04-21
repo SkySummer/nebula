@@ -88,9 +88,17 @@ enum class HttpStatus : std::uint16_t {
     NetworkAuthenticationRequired = 511,
 };
 
-int to_status_code(HttpStatus status);
+[[nodiscard]] int to_status_code(HttpStatus status) noexcept;
 
 [[nodiscard]] std::string_view to_string(HttpStatus status) noexcept;
+
+struct HttpErrorInfo {
+    HttpStatus status = HttpStatus::InternalServerError;
+    std::string_view code;
+    std::string_view message;
+};
+
+[[nodiscard]] HttpErrorInfo to_error_info(HttpStatus status) noexcept;
 
 using HeaderMap = std::unordered_map<std::string, std::string>;
 

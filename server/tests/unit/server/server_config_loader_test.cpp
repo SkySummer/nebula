@@ -65,7 +65,12 @@ void test_load_full_valid_config() {
                "password_env = \"NEBULA_TEST_DATABASE_PASSWORD_CFG\"\n"
                "max_connections = 12\n"
                "connect_timeout_ms = 2500\n"
-               "acquire_timeout_ms = 3500\n");
+               "acquire_timeout_ms = 3500\n"
+               "\n"
+               "[storage]\n"
+               "root_dir = \"runtime/custom-files\"\n"
+               "upload_session_ttl_s = 7200\n"
+               "max_file_kb = 120\n");
 
     ::setenv("NEBULA_TEST_DATABASE_PASSWORD_CFG", "db_password", 1);
     const nebula::server::ServerConfigLoadResult loaded(file);
@@ -110,6 +115,11 @@ void test_load_full_valid_config() {
                  "database connect timeout should map");
     expect_equal(config.database_acquire_timeout_ms, static_cast<std::int64_t>(3500),
                  "database acquire timeout should map");
+    expect_equal(config.storage_root_dir.string(), std::string("runtime/custom-files"), "storage root should map");
+    expect_equal(config.storage_upload_session_ttl_s, static_cast<std::int64_t>(7200),
+                 "storage upload session ttl should map");
+    expect_equal(config.storage_max_file_bytes, static_cast<std::int64_t>(120 * 1024),
+                 "storage max file bytes should map");
 }
 
 void test_worker_thread_count_zero_maps_to_default_auto_value() {
@@ -207,6 +217,77 @@ void test_port_zero_rejected() {
     expect_true(!loaded.ok, "port zero should fail");
     expect_equal(loaded.error_line, static_cast<std::size_t>(2), "port zero should report line");
     expect_equal(loaded.error, std::string("value_out_of_range:server.port"), "port zero should return fixed error");
+}
+
+void test_storage_root_dir_empty_rejected() {
+    const TempDir dir("nebula-server-config-storage-root-empty");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[storage]\n"
+               "root_dir = \"\"\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "empty storage root_dir should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "empty storage root_dir should report line");
+    expect_equal(loaded.error, std::string("invalid_value:storage.root_dir:empty_value"),
+                 "empty storage root_dir should return fixed error");
+}
+
+void test_storage_upload_session_ttl_s_must_be_positive() {
+    const TempDir dir("nebula-server-config-storage-ttl-positive");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[storage]\n"
+               "upload_session_ttl_s = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "zero storage upload_session_ttl_s should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5),
+                 "zero storage upload_session_ttl_s should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:storage.upload_session_ttl_s"),
+                 "zero storage upload_session_ttl_s should return fixed error");
+}
+
+void test_storage_max_file_size_must_be_positive() {
+    const TempDir dir("nebula-server-config-storage-max-file-positive");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[storage]\n"
+               "max_file_mb = 0\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "zero storage max_file_mb should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5), "zero storage max_file_mb should report line");
+    expect_equal(loaded.error, std::string("value_out_of_range:storage.max_file_mb"),
+                 "zero storage max_file_mb should return fixed error");
+}
+
+void test_storage_max_file_size_unit_must_be_unique() {
+    const TempDir dir("nebula-server-config-storage-max-file-unit-unique");
+    const std::filesystem::path file = dir.path() / "server.toml";
+    write_file(file,
+               "[routes]\n"
+               "enable_root_default = false\n"
+               "\n"
+               "[storage]\n"
+               "max_file_bytes = 1024\n"
+               "max_file_kb = 1\n");
+
+    const nebula::server::ServerConfigLoadResult loaded(file);
+    expect_true(!loaded.ok, "multiple storage max file units should fail");
+    expect_equal(loaded.error_line, static_cast<std::size_t>(5),
+                 "multiple storage max file units should report first unit line");
+    expect_equal(loaded.error, std::string("invalid_value:storage.max_file_size:multiple_units"),
+                 "multiple storage max file units should return fixed error");
 }
 
 void test_root_default_path_type_mismatch_rejected() {
@@ -708,6 +789,10 @@ int run_server_config_loader_tests() {
         {"database legacy password key rejected", test_database_legacy_password_key_rejected},
         {"database password env missing rejected", test_database_password_env_missing_rejected},
         {"database password env present loads successfully", test_database_password_env_present_loads_successfully},
+        {"storage root dir empty rejected", test_storage_root_dir_empty_rejected},
+        {"storage upload session ttl must be positive", test_storage_upload_session_ttl_s_must_be_positive},
+        {"storage max file size must be positive", test_storage_max_file_size_must_be_positive},
+        {"storage max file size unit must be unique", test_storage_max_file_size_unit_must_be_unique},
         {"missing file fails", test_missing_file_fails},
     };
 

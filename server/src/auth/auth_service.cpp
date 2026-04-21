@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <optional>
 #include <utility>
+
+#include "nebula/auth/jwt_secret_store.hpp"
+#include "nebula/auth/user_repository.hpp"
+#include "nebula/common/logger.hpp"
+#include "nebula/common/time_utils.hpp"
+#include "nebula/server/server_config.hpp"
 
 namespace nebula::auth {
 
@@ -54,33 +59,36 @@ RegisterResult AuthService::register_user(std::string_view username, std::string
         result.error = AuthErrorCode::InvalidPassword;
         return result;
     }
-    const user::UserFindResult existing = user::find_user_by_username(username);
-    if (existing.status == user::UserFindStatus::InternalError) {
-        result.error = AuthErrorCode::InternalError;
-        return result;
-    }
-    if (existing.status == user::UserFindStatus::Found) {
-        result.error = AuthErrorCode::UsernameAlreadyExists;
-        return result;
+
+    const UserFindResult existing = find_user_by_username(username);
+    switch (existing.status) {
+        case UserFindStatus::Found:
+            result.error = AuthErrorCode::UsernameAlreadyExists;
+            return result;
+        case UserFindStatus::NotFound:
+            break;
+        case UserFindStatus::InternalError:
+            result.error = AuthErrorCode::InternalError;
+            return result;
     }
 
-    const std::optional<std::string> password_hash = password_hasher_.hash_password(password);
+    const std::optional<PasswordHashValue> password_hash = password_hasher_.hash_password(password);
     if (!password_hash.has_value()) {
         result.error = AuthErrorCode::InternalError;
         return result;
     }
 
-    const user::AllocateIdResult allocated = user::allocate_user_id();
-    if (allocated.status != user::UserAllocateIdStatus::Allocated) {
+    const UserAllocateIdResult allocated = allocate_user_id();
+    if (allocated.status != UserAllocateIdStatus::Allocated) {
         result.error = AuthErrorCode::InternalError;
         return result;
     }
 
-    user::UserInfo user_info;
+    UserInfo user_info;
     user_info.user_id = allocated.user_id;
     user_info.username = std::string(username);
     user_info.password_hash = *password_hash;
-    user_info.created_at_s = now_epoch_s();
+    user_info.created_at_s = common::now_epoch_s();
 
     const std::optional<std::string> token = jwt_service_.issue_access_token(user_info.user_id, user_info.created_at_s);
     if (!token.has_value()) {
@@ -88,14 +96,16 @@ RegisterResult AuthService::register_user(std::string_view username, std::string
         return result;
     }
 
-    const user::UserCreateResult create_result = user::create_user(user_info);
-    if (create_result == user::UserCreateResult::DuplicateUsername) {
-        result.error = AuthErrorCode::UsernameAlreadyExists;
-        return result;
-    }
-    if (create_result == user::UserCreateResult::InternalError) {
-        result.error = AuthErrorCode::InternalError;
-        return result;
+    const UserCreateResult create_result = create_user(user_info);
+    switch (create_result) {
+        case UserCreateResult::Created:
+            break;
+        case UserCreateResult::DuplicateUsername:
+            result.error = AuthErrorCode::UsernameAlreadyExists;
+            return result;
+        case UserCreateResult::InternalError:
+            result.error = AuthErrorCode::InternalError;
+            return result;
     }
 
     result.error = AuthErrorCode::Ok;
@@ -104,7 +114,7 @@ RegisterResult AuthService::register_user(std::string_view username, std::string
     return result;
 }
 
-LoginResult AuthService::login(std::string_view username, std::string_view password) const {
+LoginResult AuthService::login_user(std::string_view username, std::string_view password) const {
     LoginResult result;
 
     if (!is_valid_username(username)) {
@@ -115,14 +125,17 @@ LoginResult AuthService::login(std::string_view username, std::string_view passw
         result.error = AuthErrorCode::InvalidPassword;
         return result;
     }
-    const user::UserFindResult found_user = user::find_user_by_username(username);
-    if (found_user.status == user::UserFindStatus::InternalError) {
-        result.error = AuthErrorCode::InternalError;
-        return result;
-    }
-    if (found_user.status == user::UserFindStatus::NotFound) {
-        result.error = AuthErrorCode::InvalidCredentials;
-        return result;
+
+    const UserFindResult found_user = find_user_by_username(username);
+    switch (found_user.status) {
+        case UserFindStatus::Found:
+            break;
+        case UserFindStatus::NotFound:
+            result.error = AuthErrorCode::InvalidCredentials;
+            return result;
+        case UserFindStatus::InternalError:
+            result.error = AuthErrorCode::InternalError;
+            return result;
     }
 
     if (!PasswordHasher::verify_password(password, found_user.info.password_hash)) {
@@ -152,23 +165,27 @@ AuthenticateResult AuthService::authenticate_access_token(std::string_view acces
 
     TokenClaims claims;
     const JwtVerifyResult verify_result = jwt_service_.verify_access_token(access_token, claims);
-    if (verify_result == JwtVerifyResult::Invalid) {
-        result.error = AuthErrorCode::TokenInvalid;
-        return result;
-    }
-    if (verify_result == JwtVerifyResult::Expired) {
-        result.error = AuthErrorCode::TokenExpired;
-        return result;
+    switch (verify_result) {
+        case JwtVerifyResult::Valid:
+            break;
+        case JwtVerifyResult::Invalid:
+            result.error = AuthErrorCode::TokenInvalid;
+            return result;
+        case JwtVerifyResult::Expired:
+            result.error = AuthErrorCode::TokenExpired;
+            return result;
     }
 
-    const user::UserFindResult found_user = user::find_user_by_id(claims.user_id);
-    if (found_user.status == user::UserFindStatus::InternalError) {
-        result.error = AuthErrorCode::InternalError;
-        return result;
-    }
-    if (found_user.status == user::UserFindStatus::NotFound) {
-        result.error = AuthErrorCode::TokenInvalid;
-        return result;
+    const UserFindResult found_user = find_user_by_id(claims.user_id);
+    switch (found_user.status) {
+        case UserFindStatus::Found:
+            break;
+        case UserFindStatus::NotFound:
+            result.error = AuthErrorCode::TokenInvalid;
+            return result;
+        case UserFindStatus::InternalError:
+            result.error = AuthErrorCode::InternalError;
+            return result;
     }
 
     result.error = AuthErrorCode::Ok;
@@ -188,9 +205,20 @@ bool AuthService::is_valid_password(std::string_view password) {
     return password.size() >= 8U && password.size() <= 72U;
 }
 
-std::int64_t AuthService::now_epoch_s() {
-    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-        .count();
+std::shared_ptr<AuthService> initialize_auth_service(const server::ServerConfig& config) {
+    const std::optional<std::string> jwt_secret = load_or_create_jwt_secret(config.auth_jwt_secret_path);
+    if (!jwt_secret.has_value()) {
+        common::Logger::instance()
+            .fatal(common::LogDomain::Auth, "auth service init failed")
+            .field("path", config.auth_jwt_secret_path.string())
+            .field("error", "jwt_secret_init_failed")
+            .field("decision", "exit_process");
+        return nullptr;
+    }
+
+    return std::make_shared<AuthService>(
+        PasswordHasher({.iterations = config.auth_password_hash_iterations}),
+        JwtService({.secret = *jwt_secret, .access_token_ttl_s = config.auth_access_token_ttl_s}));
 }
 
 }  // namespace nebula::auth

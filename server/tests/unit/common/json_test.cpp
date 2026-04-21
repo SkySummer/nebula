@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -26,7 +27,7 @@ constexpr std::size_t kJsonNestingDepthLimit = 256U;
 
 JsonParseResult parse_or_fail(std::string_view text) {
     const JsonParseResult result = parse_json(text);
-    expect_true(result.ok, std::string("expected parse success: ") + std::string(text));
+    expect_true(result.ok, std::format("expected parse success: {}", text));
     return result;
 }
 
@@ -134,7 +135,7 @@ void test_parse_errors() {
 
     const auto int64_max_u64 = static_cast<std::uint64_t>(kInt64Max);
     const std::string overflow_positive = std::to_string(int64_max_u64 + 1ULL);
-    const std::string overflow_negative = "-" + std::to_string(int64_max_u64 + 2ULL);
+    const std::string overflow_negative = std::format("-{}", int64_max_u64 + 2ULL);
 
     expect_parse_error("01", "invalid_number");
     expect_parse_error(overflow_positive, "invalid_number");

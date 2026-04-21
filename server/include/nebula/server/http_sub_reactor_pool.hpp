@@ -8,12 +8,11 @@
 
 #include "nebula/net/listener.hpp"
 #include "nebula/server/http_reactor_tasks.hpp"
+#include "nebula/server/http_sub_reactor.hpp"
 #include "nebula/server/http_sub_reactor_callbacks.hpp"
 #include "nebula/server/server_config.hpp"
 
 namespace nebula::server {
-
-class HttpSubReactor;
 
 class HttpSubReactorPool {
 public:

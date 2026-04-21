@@ -7,6 +7,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS true)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    string(REPLACE "-O3" "-O2" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+endif ()
+
 find_program(CLANG_TIDY_EXE NAMES "clang-tidy")
 if (CLANG_TIDY_EXE)
     set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE};--format-style=file")
@@ -50,13 +54,16 @@ if (BUILD_TESTING)
 
     add_nebula_test(http_server_integration_test integration/http_server_integration_test.cpp)
     add_nebula_test(http_server_auth_db_integration_test integration/http_server_auth_db_integration_test.cpp)
+    add_nebula_test(http_server_storage_db_integration_test integration/http_server_storage_db_integration_test.cpp)
 
     add_nebula_test(auth_service_test unit/auth/auth_service_test.cpp)
     add_nebula_test(jwt_secret_store_test unit/auth/jwt_secret_store_test.cpp)
     add_nebula_test(jwt_service_test unit/auth/jwt_service_test.cpp)
     add_nebula_test(password_hasher_test unit/auth/password_hasher_test.cpp)
+    add_nebula_test(user_repository_test unit/auth/user_repository_test.cpp)
 
     add_nebula_test(base64_test unit/common/base64_test.cpp)
+    add_nebula_test(database_utils_test unit/common/database_utils_test.cpp)
     add_nebula_test(json_test unit/common/json_test.cpp)
     add_nebula_test(logger_test unit/common/logger_test.cpp)
     add_nebula_test(postgres_connection_pool_test unit/common/postgres_connection_pool_test.cpp)
@@ -76,5 +83,7 @@ if (BUILD_TESTING)
     add_nebula_test(server_config_loader_test unit/server/server_config_loader_test.cpp)
     add_nebula_test(startup_test unit/server/startup_test.cpp)
 
-    add_nebula_test(postgres_user_repository_test unit/user/postgres_user_repository_test.cpp)
+    add_nebula_test(storage_types_test unit/storage/storage_types_test.cpp)
+    add_nebula_test(storage_utils_test unit/storage/storage_utils_test.cpp)
+
 endif ()

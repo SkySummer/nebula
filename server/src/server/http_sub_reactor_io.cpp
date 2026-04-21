@@ -403,7 +403,7 @@ void HttpSubReactor::parse_next_request(Connection& connection) {
             const auto request_started_at = *connection.active_request_started_at;
             connection.active_request_started_at.reset();
             try {
-                enqueue_error_response(connection.fd, connection.token, parsed.http_status, parsed.error, true,
+                enqueue_error_response(connection.fd, connection.token, parsed.http_status, parsed.error_message, true,
                                        suppress_body, request_line, request_bytes, request_started_at);
             } catch (const std::exception& e) {
                 close_with_response_enqueue_error("sub reactor enqueue parse error response failed", connection.fd,
@@ -424,15 +424,15 @@ void HttpSubReactor::parse_next_request(Connection& connection) {
     schedule_request(connection, std::move(parsed.request), parsed.consumed_bytes, request_started_at);
 }
 
-void HttpSubReactor::enqueue_error_response(int fd, std::uint64_t token, http::HttpStatus status, std::string body,
-                                            bool close_after_write, bool suppress_body, std::string request_line,
-                                            std::size_t request_bytes,
+void HttpSubReactor::enqueue_error_response(int fd, std::uint64_t token, http::HttpStatus status,
+                                            std::string_view error_message, bool close_after_write, bool suppress_body,
+                                            std::string request_line, std::size_t request_bytes,
                                             std::chrono::steady_clock::time_point request_started_at) {
     const bool enqueued = enqueue_response(ReactorResponseTask{
         .reactor_id = id_,
         .fd = fd,
         .connection_token = token,
-        .response = http::make_error_response(status, std::move(body)),
+        .response = http::make_api_error_response(status, error_message),
         .close_after_write = close_after_write,
         .suppress_body = suppress_body,
         .request_line = std::move(request_line),

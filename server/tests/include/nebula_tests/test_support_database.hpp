@@ -4,14 +4,13 @@
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "nebula/common/postgres_connection_pool.hpp"
 
 namespace nebula::testsupport::database {
-
-inline constexpr int kDatabaseTestSkipReturnCode = 77;
 
 inline std::string env_or_default(const char* name, std::string default_value) {
     const char* value = std::getenv(name);
@@ -73,6 +72,16 @@ inline std::optional<nebula::common::PostgresConnectionPoolOptions> load_postgre
     options.connect_timeout_ms = connect_timeout_ms;
     options.acquire_timeout_ms = acquire_timeout_ms;
     return options;
+}
+
+inline nebula::common::PostgresConnectionPoolOptions require_postgres_pool_test_options(
+    const std::size_t max_connections = 4U, const std::int64_t connect_timeout_ms = 3000,
+    const std::int64_t acquire_timeout_ms = 3000) {
+    const auto options = load_postgres_pool_test_options(max_connections, connect_timeout_ms, acquire_timeout_ms);
+    if (!options.has_value()) {
+        throw std::runtime_error("postgres test database env should be configured before running tests");
+    }
+    return options.value();
 }
 
 }  // namespace nebula::testsupport::database

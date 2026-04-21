@@ -111,8 +111,13 @@ private:
 };
 
 [[nodiscard]] std::string_view to_string(PostgresConnectionPool::InitializeStatus status) noexcept;
+
 [[nodiscard]] std::string_view to_string(PostgresConnectionPool::AcquireStatus status) noexcept;
+
 [[nodiscard]] std::string build_connection_info(const PostgresConnectionPoolOptions& options);
+
+[[nodiscard]] std::optional<PostgresConnectionPool::ConnectionLease> acquire_connection_lease(
+    std::string_view operation);
 
 }  // namespace nebula::common
 

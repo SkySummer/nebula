@@ -18,7 +18,6 @@ public:
 
     Listener(const Listener&) = delete;
     Listener& operator=(const Listener&) = delete;
-
     Listener(Listener&& other) noexcept;
     Listener& operator=(Listener&& other) noexcept;
 

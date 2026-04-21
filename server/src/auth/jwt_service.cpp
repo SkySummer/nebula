@@ -1,6 +1,5 @@
 #include "nebula/auth/jwt_service.hpp"
 
-#include <chrono>
 #include <cstdint>
 #include <format>
 #include <limits>
@@ -14,6 +13,7 @@
 
 #include "nebula/common/base64.hpp"
 #include "nebula/common/json.hpp"
+#include "nebula/common/time_utils.hpp"
 
 namespace nebula::auth {
 
@@ -37,11 +37,6 @@ std::optional<std::string> hmac_sha256(std::string_view key, std::string_view da
         digest_text[idx] = static_cast<char>(digest[idx]);
     }
     return digest_text;
-}
-
-std::int64_t now_epoch_s() {
-    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-        .count();
 }
 
 std::optional<std::int64_t> parse_user_id(std::string_view text) {
@@ -129,7 +124,7 @@ std::optional<std::string> JwtService::issue_access_token(std::int64_t user_id, 
         return std::nullopt;
     }
 
-    const std::int64_t now_s = now_epoch_seconds >= 0 ? now_epoch_seconds : now_epoch_s();
+    const std::int64_t now_s = now_epoch_seconds >= 0 ? now_epoch_seconds : common::now_epoch_s();
     if (now_s > std::numeric_limits<std::int64_t>::max() - config_.access_token_ttl_s) {
         return std::nullopt;
     }
@@ -141,14 +136,14 @@ std::optional<std::string> JwtService::issue_access_token(std::int64_t user_id, 
     const std::string payload_json = common::dump_json(common::JsonValue(std::move(payload_object)));
     const std::string header = common::base64url_encode(kJwtHeaderJson);
     const std::string payload = common::base64url_encode(payload_json);
-    const std::string signing_input = header + "." + payload;
+    const std::string signing_input = std::format("{}.{}", header, payload);
 
     const std::optional<std::string> signature = hmac_sha256(config_.secret, signing_input);
     if (!signature.has_value()) {
         return std::nullopt;
     }
 
-    return signing_input + "." + common::base64url_encode(*signature);
+    return std::format("{}.{}", signing_input, common::base64url_encode(*signature));
 }
 
 JwtVerifyResult JwtService::verify_access_token(std::string_view token, TokenClaims& claims,
@@ -191,7 +186,7 @@ JwtVerifyResult JwtService::verify_access_token(std::string_view token, TokenCla
         return JwtVerifyResult::Invalid;
     }
 
-    const std::int64_t now_s = now_epoch_seconds >= 0 ? now_epoch_seconds : now_epoch_s();
+    const std::int64_t now_s = now_epoch_seconds >= 0 ? now_epoch_seconds : common::now_epoch_s();
     if (payload->exp <= now_s) {
         return JwtVerifyResult::Expired;
     }

@@ -22,11 +22,6 @@ namespace nebula::server {
 
 namespace {
 
-ServerConfig normalize_server_config(ServerConfig config) {
-    normalize_server_thread_counts(config);
-    return config;
-}
-
 void log_access_addresses(std::uint16_t listening_port) {
     const net::AccessAddressCollection access_addresses = net::collect_access_addresses(listening_port);
     for (const net::AccessAddress& address : access_addresses.addresses) {
@@ -61,18 +56,16 @@ void log_runtime_exception(const char* event, LifecycleState state, const char* 
 
 }  // namespace
 
-HttpServerRuntime::HttpServerRuntime(ServerConfig config, std::shared_ptr<http::Router> router)
-    : config_(normalize_server_config(std::move(config))),
+HttpServerRuntime::HttpServerRuntime(ServerConfig config, std::shared_ptr<http::Router> router,
+                                     std::shared_ptr<auth::AuthService> auth_service)
+    : config_(std::move(config).normalize()),
       signal_handler_(config_.manage_signals ? std::make_unique<SignalHandler>() : nullptr),
       main_reactor_(std::make_unique<HttpMainReactor>()),
       router_(std::move(router)),
+      auth_service_(std::move(auth_service)),
       thread_pool_(config_.worker_thread_count) {
-    if (router_ == nullptr) {
-        router_ = std::make_shared<http::Router>();
-    }
-
     request_dispatcher_ = std::make_unique<HttpRequestDispatcher>(
-        router_, thread_pool_, [this](ReactorResponseTask task) { submit_response(std::move(task)); });
+        router_, auth_service_, thread_pool_, [this](ReactorResponseTask task) { submit_response(std::move(task)); });
 
     sub_reactor_pool_ = std::make_unique<HttpSubReactorPool>(
         config_, [this](ReactorRequestTask task) { dispatch_sub_request(std::move(task)); },
@@ -377,7 +370,7 @@ void HttpServerRuntime::enter_shutdown_draining(ShutdownMachine& shutdown) {
 
     std::size_t connection_count = 0;
     std::size_t pending_count = 0;
-    [[maybe_unused]] const bool ignored = collect_drain_status(connection_count, pending_count);
+    collect_drain_status(connection_count, pending_count);
 
     common::Logger::instance()
         .info(common::LogDomain::Server, "graceful shutdown started")

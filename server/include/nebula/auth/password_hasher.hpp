@@ -11,21 +11,25 @@
 
 namespace nebula::auth {
 
-[[nodiscard]] std::string format_password_hash(std::uint64_t iterations, std::string_view salt,
-                                               std::string_view derived_key);
-
 struct PasswordHashConfig {
     std::uint32_t iterations = kDefaultPasswordHashIterations;
     std::size_t salt_bytes = kDefaultPasswordHashSaltBytes;
     std::size_t derived_key_bytes = kDefaultPasswordHashDerivedKeyBytes;
 };
 
+struct PasswordHashValue {
+    std::string algorithm;
+    std::uint32_t iterations = 0;
+    std::string salt;
+    std::string derived_key;
+};
+
 class PasswordHasher {
 public:
     explicit PasswordHasher(PasswordHashConfig config = {});
 
-    [[nodiscard]] std::optional<std::string> hash_password(std::string_view password) const;
-    [[nodiscard]] static bool verify_password(std::string_view password, std::string_view encoded_hash);
+    [[nodiscard]] std::optional<PasswordHashValue> hash_password(std::string_view password) const;
+    [[nodiscard]] static bool verify_password(std::string_view password, const PasswordHashValue& value);
 
 private:
     PasswordHashConfig config_;

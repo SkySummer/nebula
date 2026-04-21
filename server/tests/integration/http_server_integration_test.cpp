@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <future>
 #include <memory>
 #include <optional>
@@ -25,13 +26,17 @@
 #include <unistd.h>
 
 #include "nebula/auth/auth_http.hpp"
+#include "nebula/auth/auth_service.hpp"
+#include "nebula/common/database_utils.hpp"
 #include "nebula/common/logger.hpp"
+#include "nebula/common/postgres_connection_pool.hpp"
 #include "nebula/http/router.hpp"
 #include "nebula_tests/test_support.hpp"
 #include "nebula_tests/test_support_integration.hpp"
 
 namespace {
 
+using nebula::server::RunResult;
 using nebula::testsupport::capture_stderr;
 using nebula::testsupport::expect_contains;
 using nebula::testsupport::expect_not_contains;
@@ -41,9 +46,8 @@ using nebula::testsupport::integration::build_runtime;
 using nebula::testsupport::integration::connect_localhost;
 using nebula::testsupport::integration::read_until_close;
 using nebula::testsupport::integration::send_all;
+using nebula::testsupport::integration::ServerThreadGuard;
 using nebula::testsupport::integration::wait_until_server_ready;
-using RunResult = nebula::server::RunResult;
-using ServerThreadGuard = nebula::testsupport::integration::ServerThreadGuard;
 
 constexpr std::string_view kIntegrationJwtSecret = "integration_auth_secret_0123456789abcdef";
 
@@ -215,16 +219,16 @@ class SignalMaskGuard {
 public:
     SignalMaskGuard() : valid_(::pthread_sigmask(SIG_SETMASK, nullptr, &saved_mask_) == 0) {}
 
-    SignalMaskGuard(const SignalMaskGuard&) = delete;
-    SignalMaskGuard& operator=(const SignalMaskGuard&) = delete;
-    SignalMaskGuard(SignalMaskGuard&&) = delete;
-    SignalMaskGuard& operator=(SignalMaskGuard&&) = delete;
-
     ~SignalMaskGuard() noexcept {
         if (valid_) {
             ::pthread_sigmask(SIG_SETMASK, &saved_mask_, nullptr);
         }
     }
+
+    SignalMaskGuard(const SignalMaskGuard&) = delete;
+    SignalMaskGuard& operator=(const SignalMaskGuard&) = delete;
+    SignalMaskGuard(SignalMaskGuard&&) = delete;
+    SignalMaskGuard& operator=(SignalMaskGuard&&) = delete;
 
     [[nodiscard]] bool valid() const {
         return valid_;
@@ -255,16 +259,16 @@ public:
         installed_ = (::sigaction(signal_, &action, nullptr) == 0);
     }
 
-    SignalActionGuard(const SignalActionGuard&) = delete;
-    SignalActionGuard& operator=(const SignalActionGuard&) = delete;
-    SignalActionGuard(SignalActionGuard&&) = delete;
-    SignalActionGuard& operator=(SignalActionGuard&&) = delete;
-
     ~SignalActionGuard() noexcept {
         if (has_saved_action_) {
             ::sigaction(signal_, &saved_action_, nullptr);
         }
     }
+
+    SignalActionGuard(const SignalActionGuard&) = delete;
+    SignalActionGuard& operator=(const SignalActionGuard&) = delete;
+    SignalActionGuard(SignalActionGuard&&) = delete;
+    SignalActionGuard& operator=(SignalActionGuard&&) = delete;
 
     [[nodiscard]] bool installed() const {
         return installed_;
@@ -355,13 +359,14 @@ void test_signal_shutdown_remains_available_after_restart() {
             server.request_stop();
         }
 
-        expect_true(stopped_by_signal, std::string(cycle_name) + " cycle should stop after SIGTERM");
+        expect_true(stopped_by_signal, std::format("{} cycle should stop after SIGTERM", cycle_name));
         expect_true(start_future.wait_for(2s) == std::future_status::ready,
-                    std::string(cycle_name) + " cycle should return after stop");
+                    std::format("{} cycle should return after stop", cycle_name));
 
         const RunResult result = start_future.get();
-        expect_true(is_nonfatal_run_result(result), std::string(cycle_name) + " cycle should exit without fatal error");
-        expect_true(!server.is_running(), std::string(cycle_name) + " cycle should leave server stopped");
+        expect_true(is_nonfatal_run_result(result),
+                    std::format("{} cycle should exit without fatal error", cycle_name));
+        expect_true(!server.is_running(), std::format("{} cycle should leave server stopped", cycle_name));
     };
 
     run_cycle_and_stop_with_sigterm("first");
@@ -509,6 +514,7 @@ void test_root_endpoint_not_found_when_root_mapping_disabled() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 404 Not Found", "root should return 404 when mapping is disabled");
+    expect_contains(response, R"("code":"not_found")", "root disabled response should use api not_found code");
 }
 
 void test_head_method_suppresses_body() {
@@ -569,9 +575,10 @@ void test_echo_endpoint() {
     expect_true(fd >= 0, "connect should succeed");
 
     const std::string body = R"({"message":"hi"})";
-    const std::string request = std::string("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: ") +
-                                std::to_string(body.size()) +
-                                "\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n" + body;
+    const std::string request = std::format(
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n"
+        "Content-Type: application/json\r\nConnection: close\r\n\r\n{}",
+        body.size(), body);
     expect_true(send_all(fd, request), "send request should succeed");
 
     std::string carry;
@@ -600,8 +607,28 @@ void test_auth_route_registration_fails_when_database_unreachable() {
     config.database_connect_timeout_ms = 500;
 
     auto router = build_default_router();
-    expect_true(!nebula::auth::register_auth_routes(config, router),
-                "register auth routes should fail when database is unreachable");
+    const std::shared_ptr<nebula::auth::AuthService> auth_service = nebula::auth::initialize_auth_service(config);
+    expect_true(auth_service != nullptr, "initialize auth service should succeed without database initialization");
+    const std::optional<std::string> password = nebula::common::resolve_database_password(config.database_password_env);
+    expect_true(password.has_value(), "database password should be available");
+    if (password.has_value()) {
+        const nebula::common::PostgresConnectionPool::InitializeStatus pool_status =
+            nebula::common::PostgresConnectionPool::instance().initialize(nebula::common::PostgresConnectionPoolOptions{
+                .host = config.database_host,
+                .port = config.database_port,
+                .database = config.database_name,
+                .user = config.database_user,
+                .password = *password,
+                .max_connections = config.database_max_connections,
+                .connect_timeout_ms = config.database_connect_timeout_ms,
+                .acquire_timeout_ms = config.database_acquire_timeout_ms,
+            });
+        expect_true(pool_status != nebula::common::PostgresConnectionPool::InitializeStatus::Initialized &&
+                        pool_status != nebula::common::PostgresConnectionPool::InitializeStatus::AlreadyInitialized,
+                    "database pool initialization should fail when database is unreachable");
+    }
+    expect_true(!nebula::auth::register_auth_routes(auth_service, router),
+                "register auth routes should fail when database pool is unavailable");
     ::unsetenv("NEBULA_TEST_INVALID_DATABASE_PASSWORD");
 }
 
@@ -637,7 +664,7 @@ void test_request_completed_log_uses_raw_request_line() {
                     "[INFO] request completed: domain=server, fd=", "request completed log should be emitted");
     expect_contains(stderr_text, "request=\"GET http://localhost/healthz HTTP/1.1\"",
                     "request field should use raw request line");
-    expect_contains(stderr_text, std::string("request_bytes=") + std::to_string(request.size()),
+    expect_contains(stderr_text, std::format("request_bytes={}", request.size()),
                     "request bytes should match raw request size");
     expect_contains(stderr_text, "status=200 (OK)", "status field should include status text");
     expect_contains(stderr_text, "response_bytes=", "response bytes field should be logged");
@@ -727,8 +754,9 @@ void test_keep_alive_two_requests() {
     expect_contains(response1, "HTTP/1.1 200 OK", "first keep-alive response should be 200");
 
     const std::string body = R"({"second":true})";
-    const std::string request2 = std::string("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: ") +
-                                 std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+    const std::string request2 =
+        std::format("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.size(), body);
     expect_true(send_all(fd, request2), "second request should send");
 
     const std::string response2 = read_one_response(fd, carry);
@@ -1061,6 +1089,37 @@ void test_builder_build_without_router_throws() {
     expect_true(thrown, "builder should reject missing router");
 }
 
+void test_builder_build_without_auth_service_throws_when_require_user_route_exists() {
+    nebula::server::ServerConfig config;
+    config.port = 0;
+    config.worker_thread_count = 2;
+    config.manage_signals = false;
+
+    const auto router = build_default_router();
+    expect_true(router->add_route(
+                    nebula::http::HttpMethod::Get, "/protected",
+                    [](const nebula::http::RouteContext&) {
+                        nebula::http::HttpResponse response;
+                        response.status = nebula::http::HttpStatus::OK;
+                        response.headers.emplace("Content-Type", "text/plain");
+                        response.body = "protected";
+                        return response;
+                    },
+                    nebula::http::RouteOptions{.require_user = true}),
+                "add require_user route should succeed");
+
+    bool thrown = false;
+    try {
+        [[maybe_unused]] auto server =
+            nebula::server::HttpServerBuilder().with_config(config).with_router(router).build();
+    } catch (const std::invalid_argument& error) {
+        thrown = true;
+        expect_contains(error.what(), "auth_service_missing", "missing auth service should expose stable error code");
+    }
+
+    expect_true(thrown, "builder should reject missing auth service when require_user route exists");
+}
+
 void test_builder_build_supports_multiple_runtime_instances_from_same_builder() {
     using namespace std::chrono_literals;
 
@@ -1343,7 +1402,7 @@ void test_add_route_while_running() {
     wait_until_server_ready(server);
 
     const std::string path = "/dynamic-runtime";
-    const std::string request = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    const std::string request = std::format("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path);
 
     const auto send_request = [&](const std::string& raw_request) {
         const int fd = connect_localhost(server.listening_port());
@@ -1358,6 +1417,7 @@ void test_add_route_while_running() {
 
     const std::string before_response = send_request(request);
     expect_contains(before_response, "HTTP/1.1 404 Not Found", "new route should be 404 before add_route");
+    expect_contains(before_response, R"("code":"not_found")", "new route miss should use api not_found code");
 
     expect_true(router->add_route(nebula::http::HttpMethod::Get, path,
                                   [](const nebula::http::RouteContext&) {
@@ -1415,6 +1475,7 @@ void test_del_route_while_running() {
 
     const std::string after_response = send_request(request);
     expect_contains(after_response, "HTTP/1.1 404 Not Found", "healthz should be 404 after del_route");
+    expect_contains(after_response, R"("code":"not_found")", "deleted route should use api not_found code");
 }
 
 void test_mod_route_while_running() {
@@ -1509,7 +1570,8 @@ void test_method_not_allowed_includes_allow_header() {
 
     expect_contains(response, "HTTP/1.1 405 Method Not Allowed", "unknown route method should return 405");
     expect_contains(response, "\r\nAllow: GET, POST\r\n", "405 should include Allow header with method set");
-    expect_contains(response, "Method Not Allowed", "error body should keep method not allowed text");
+    expect_contains(response, R"("code":"method_not_allowed")", "405 body should use api method_not_allowed code");
+    expect_contains(response, R"("message":"method not allowed")", "405 body should use api message");
 }
 
 void test_dynamic_route_runtime_match_and_params() {
@@ -1524,7 +1586,7 @@ void test_dynamic_route_runtime_match_and_params() {
                                       nebula::http::HttpResponse response;
                                       response.status = nebula::http::HttpStatus::OK;
                                       response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "user=" + context.params.at("id");
+                                      response.body = std::format("user={}", context.params.at("id"));
                                       return response;
                                   }),
                 "add dynamic route should succeed");
@@ -1634,9 +1696,9 @@ void test_chunked_many_boundaries_within_decoded_limit_returns_200() {
     expect_true(fd >= 0, "connect should succeed");
 
     const std::string body = "abcdefghijklmnop";
-    const std::string request =
-        "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
-        encode_chunked_single_byte_chunks(body);
+    const std::string request = std::format(
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{}",
+        encode_chunked_single_byte_chunks(body));
     expect_true(send_all(fd, request), "send request should succeed");
 
     std::string carry;
@@ -1670,7 +1732,8 @@ void test_missing_host_returns_400() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 400 Bad Request", "missing host should return 400");
-    expect_contains(response, "Missing Host Header", "error body should explain missing host");
+    expect_contains(response, R"("code":"bad_request")", "missing host body should use api bad_request code");
+    expect_contains(response, R"("message":"missing host header")", "missing host body should explain missing host");
 }
 
 void test_empty_host_returns_400() {
@@ -1694,7 +1757,9 @@ void test_empty_host_returns_400() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 400 Bad Request", "empty host should return 400");
-    expect_contains(response, "Invalid Host Header", "error body should explain empty host rejection");
+    expect_contains(response, R"("code":"bad_request")", "empty host body should use api bad_request code");
+    expect_contains(response, R"("message":"invalid host header")",
+                    "empty host body should explain empty host rejection");
 }
 
 void test_unknown_method_returns_501() {
@@ -1718,7 +1783,9 @@ void test_unknown_method_returns_501() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 501 Not Implemented", "unknown method should return 501");
-    expect_contains(response, "Unsupported HTTP Method", "error body should explain unsupported method");
+    expect_contains(response, R"("code":"not_implemented")", "unknown method body should use api not_implemented code");
+    expect_contains(response, R"("message":"unsupported http method")",
+                    "unknown method body should explain unsupported method");
 }
 
 void test_unsupported_http_version_returns_505() {
@@ -1742,7 +1809,10 @@ void test_unsupported_http_version_returns_505() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 505 HTTP Version Not Supported", "unsupported version should return 505");
-    expect_contains(response, "HTTP Version Not Supported", "error body should explain unsupported version");
+    expect_contains(response, R"("code":"http_version_not_supported")",
+                    "unsupported version body should use api http_version_not_supported code");
+    expect_contains(response, R"("message":"http version not supported")",
+                    "unsupported version body should use api default message");
 }
 
 void test_invalid_http_version_returns_400() {
@@ -1766,7 +1836,9 @@ void test_invalid_http_version_returns_400() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 400 Bad Request", "invalid version format should return 400");
-    expect_contains(response, "Invalid HTTP Version", "error body should explain invalid version format");
+    expect_contains(response, R"("code":"bad_request")", "invalid version body should use api bad_request code");
+    expect_contains(response, R"("message":"invalid http version")",
+                    "invalid version body should explain invalid version format");
 }
 
 void test_content_too_large_returns_413() {
@@ -1784,8 +1856,9 @@ void test_content_too_large_returns_413() {
     expect_true(fd >= 0, "connect should succeed");
 
     const std::string body = "0123456789";
-    const std::string request = std::string("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: ") +
-                                std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+    const std::string request =
+        std::format("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.size(), body);
     expect_true(send_all(fd, request), "send request should succeed");
 
     std::string carry;
@@ -1793,7 +1866,8 @@ void test_content_too_large_returns_413() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 413 Content Too Large", "oversized body should return 413");
-    expect_contains(response, "Content Too Large", "error body should explain oversized body");
+    expect_contains(response, R"("code":"content_too_large")", "oversized body should use api content_too_large code");
+    expect_contains(response, R"("message":"content too large")", "oversized body should use api default message");
 }
 
 void test_header_too_large_returns_431() {
@@ -1810,8 +1884,9 @@ void test_header_too_large_returns_431() {
     const int fd = connect_localhost(server.listening_port());
     expect_true(fd >= 0, "connect should succeed");
 
-    const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Oversized: " + std::string(256U, 'a') +
-                                "\r\nConnection: close\r\n\r\n";
+    const std::string request =
+        std::format("GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Oversized: {}\r\nConnection: close\r\n\r\n",
+                    std::string(256U, 'a'));
     expect_true(send_all(fd, request), "send request should succeed");
 
     std::string carry;
@@ -1819,7 +1894,10 @@ void test_header_too_large_returns_431() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 431 Request Header Fields Too Large", "oversized header should return 431");
-    expect_contains(response, "Request Header Fields Too Large", "error body should explain oversized header");
+    expect_contains(response, R"("code":"request_header_fields_too_large")",
+                    "oversized header should use api request_header_fields_too_large code");
+    expect_contains(response, R"("message":"request header fields too large")",
+                    "oversized header should use api default message");
 }
 
 void test_uri_too_long_returns_414() {
@@ -1844,7 +1922,8 @@ void test_uri_too_long_returns_414() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 414 URI Too Long", "oversized request-target should return 414");
-    expect_contains(response, "URI Too Long", "error body should explain oversized request-target");
+    expect_contains(response, R"("code":"uri_too_long")", "oversized request-target should use api uri_too_long code");
+    expect_contains(response, R"("message":"uri too long")", "oversized request-target should use api default message");
 }
 
 void test_head_parse_error_suppresses_body() {
@@ -1867,6 +1946,8 @@ void test_head_parse_error_suppresses_body() {
     ::close(fd);
 
     expect_contains(response, "HTTP/1.1 400 Bad Request", "head parse error should return 400");
+    expect_contains(response, "\r\nContent-Type: application/json; charset=utf-8\r\n",
+                    "head parse error should use api content-type");
 
     const std::size_t header_end = response.find("\r\n\r\n");
     expect_true(header_end != std::string::npos, "head parse error response should contain header terminator");
@@ -1906,6 +1987,7 @@ void test_parse_error_responds_once_before_close() {
     ::close(fd);
 
     expect_contains(all_responses, "HTTP/1.1 400 Bad Request", "parse error should return 400");
+    expect_contains(all_responses, R"("code":"bad_request")", "parse error should use api bad_request code");
     const std::size_t response_count = count_occurrences(all_responses, "HTTP/1.1 ");
     expect_true(response_count == 1U, "parse error should respond once before closing connection");
 }
@@ -1988,6 +2070,8 @@ int run_http_server_integration_tests() {
          test_single_prestart_stop_cancels_start_once_and_server_remains_reusable},
         {"builder server supports prestart cancel", test_builder_server_supports_prestart_cancel},
         {"builder build without router throws", test_builder_build_without_router_throws},
+        {"builder build without auth service throws when require user route exists",
+         test_builder_build_without_auth_service_throws_when_require_user_route_exists},
         {"builder build supports multiple runtime instances from same builder",
          test_builder_build_supports_multiple_runtime_instances_from_same_builder},
         {"graceful stop completes inflight request", test_graceful_stop_completes_inflight_request},

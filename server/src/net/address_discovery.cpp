@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cerrno>
+#include <format>
 #include <set>
 #include <string_view>
 
@@ -20,11 +21,7 @@ sockaddr_in* as_sockaddr_in(sockaddr* addr) {
 }
 
 std::string build_http_url(std::string_view host, std::uint16_t port) {
-    std::string url = "http://";
-    url.append(host);
-    url.push_back(':');
-    url.append(std::to_string(port));
-    return url;
+    return std::format("http://{}:{}", host, port);
 }
 
 }  // namespace

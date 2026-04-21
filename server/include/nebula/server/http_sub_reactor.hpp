@@ -115,7 +115,7 @@ private:
                           std::chrono::steady_clock::time_point request_started_at);
     void parse_next_request(Connection& connection);
 
-    void enqueue_error_response(int fd, std::uint64_t token, http::HttpStatus status, std::string body,
+    void enqueue_error_response(int fd, std::uint64_t token, http::HttpStatus status, std::string_view error_message,
                                 bool close_after_write, bool suppress_body, std::string request_line,
                                 std::size_t request_bytes, std::chrono::steady_clock::time_point request_started_at);
     void close_with_response_enqueue_error(const char* event, int fd, std::uint64_t token, const char* error,

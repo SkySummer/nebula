@@ -1,6 +1,7 @@
 #include "nebula/server/server_config.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
@@ -23,6 +24,8 @@ namespace nebula::server {
 namespace {
 
 constexpr std::int64_t kMaxAuthAccessTokenTtlSeconds = 86'400;
+constexpr std::int64_t kMaxStorageUploadSessionTtlSeconds = 2'592'000;
+constexpr std::int64_t kMaxStorageFileBytes = std::numeric_limits<std::int64_t>::max();
 
 using Table = std::unordered_map<std::string, config::TomlValue>;
 
@@ -56,6 +59,12 @@ const std::unordered_set<std::string> kKnownKeys = {
     "database.max_connections",
     "database.connect_timeout_ms",
     "database.acquire_timeout_ms",
+    "storage.root_dir",
+    "storage.upload_session_ttl_s",
+    "storage.max_file_bytes",
+    "storage.max_file_kb",
+    "storage.max_file_mb",
+    "storage.max_file_gb",
 };
 
 std::string to_lower(std::string_view text) {
@@ -305,7 +314,7 @@ bool apply_server_values(const Table& table, ServerConfig& config, ServerConfigL
     if (!assign_integer(table, "server.worker_thread_count", config.worker_thread_count, result)) {
         return false;
     }
-    normalize_server_thread_counts(config);
+    config.normalize();
     return assign_bool_value(table, "server.manage_signals", config.manage_signals, result);
 }
 
@@ -462,6 +471,61 @@ bool apply_database_values(const Table& table, ServerConfig& config, ServerConfi
     return validate_database_password_env(table, config, result);
 }
 
+bool apply_storage_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
+    std::string storage_root_dir = config.storage_root_dir.string();
+    if (!assign_non_empty_string_value(table, "storage.root_dir", storage_root_dir, result)) {
+        return false;
+    }
+    config.storage_root_dir = storage_root_dir;
+
+    if (!assign_integer_in_range(table, "storage.upload_session_ttl_s", config.storage_upload_session_ttl_s,
+                                 static_cast<std::int64_t>(1), kMaxStorageUploadSessionTtlSeconds, result)) {
+        return false;
+    }
+
+    const config::TomlValue* max_file_bytes = find_value(table, "storage.max_file_bytes");
+    const config::TomlValue* max_file_kb = find_value(table, "storage.max_file_kb");
+    const config::TomlValue* max_file_mb = find_value(table, "storage.max_file_mb");
+    const config::TomlValue* max_file_gb = find_value(table, "storage.max_file_gb");
+    const std::size_t configured_count = (max_file_bytes == nullptr ? 0U : 1U) + (max_file_kb == nullptr ? 0U : 1U) +
+                                         (max_file_mb == nullptr ? 0U : 1U) + (max_file_gb == nullptr ? 0U : 1U);
+    if (configured_count == 0U) {
+        return true;
+    }
+    if (configured_count > 1U) {
+        std::size_t error_line = std::numeric_limits<std::size_t>::max();
+        const std::array<const config::TomlValue*, 4> size_values = {max_file_bytes, max_file_kb, max_file_mb,
+                                                                     max_file_gb};
+        for (const config::TomlValue* value : size_values) {
+            if (value != nullptr) {
+                error_line = std::min(error_line, value->line);
+            }
+        }
+        fail(result, "invalid_value:storage.max_file_size:multiple_units", error_line);
+        return false;
+    }
+
+    std::int64_t size_value = config.storage_max_file_bytes;
+    std::int64_t multiplier = 1;
+    std::string_view key = "storage.max_file_bytes";
+    if (max_file_kb != nullptr) {
+        multiplier = 1024LL;
+        key = "storage.max_file_kb";
+    } else if (max_file_mb != nullptr) {
+        multiplier = 1024LL * 1024;
+        key = "storage.max_file_mb";
+    } else if (max_file_gb != nullptr) {
+        multiplier = 1024LL * 1024 * 1024;
+        key = "storage.max_file_gb";
+    }
+
+    if (!assign_integer_in_range(table, key, size_value, std::int64_t{1}, kMaxStorageFileBytes / multiplier, result)) {
+        return false;
+    }
+    config.storage_max_file_bytes = size_value * multiplier;
+    return true;
+}
+
 bool apply_auth_values(const Table& table, ServerConfig& config, ServerConfigLoadResult& result) {
     const config::TomlValue* jwt_secret_path_raw = find_value(table, "auth.jwt_secret_path");
     if (jwt_secret_path_raw != nullptr) {
@@ -518,6 +582,9 @@ bool apply_table_to_config(const Table& table, ServerConfig& config, ServerConfi
     if (!apply_database_values(table, config, result)) {
         return false;
     }
+    if (!apply_storage_values(table, config, result)) {
+        return false;
+    }
     return true;
 }
 
@@ -539,13 +606,19 @@ std::size_t default_sub_reactor_count() {
     return std::max<std::size_t>(1U, hardware / 2U);
 }
 
-void normalize_server_thread_counts(ServerConfig& config) {
-    if (config.sub_reactor_count == 0U) {
-        config.sub_reactor_count = default_sub_reactor_count();
+ServerConfig& ServerConfig::normalize() & {
+    if (sub_reactor_count == 0U) {
+        sub_reactor_count = default_sub_reactor_count();
     }
-    if (config.worker_thread_count == 0U) {
-        config.worker_thread_count = default_worker_thread_count();
+    if (worker_thread_count == 0U) {
+        worker_thread_count = default_worker_thread_count();
     }
+    return *this;
+}
+
+ServerConfig&& ServerConfig::normalize() && {
+    normalize();
+    return std::move(*this);
 }
 
 std::string_view to_string(ServerConfigSource source) noexcept {

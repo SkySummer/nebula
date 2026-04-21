@@ -7,28 +7,22 @@
 #include <cstdint>
 #include <memory>
 
+#include "nebula/auth/auth_service.hpp"
 #include "nebula/common/thread_pool.hpp"
+#include "nebula/http/router.hpp"
+#include "nebula/server/http_main_reactor.hpp"
 #include "nebula/server/http_reactor_tasks.hpp"
+#include "nebula/server/http_request_dispatcher.hpp"
+#include "nebula/server/http_sub_reactor_pool.hpp"
 #include "nebula/server/run_result.hpp"
 #include "nebula/server/server_config.hpp"
 #include "nebula/server/server_lifecycle_controller.hpp"
-
-namespace nebula::http {
-
-class Router;
-
-}  // namespace nebula::http
+#include "nebula/server/signal_handler.hpp"
 
 namespace nebula::server {
 
-class SignalHandler;
-class HttpRequestDispatcher;
-class HttpMainReactor;
-class HttpSubReactorPool;
-
 class HttpServerRuntime {
 public:
-    explicit HttpServerRuntime(ServerConfig config = {}, std::shared_ptr<http::Router> router = nullptr);
     ~HttpServerRuntime() noexcept;
 
     HttpServerRuntime(const HttpServerRuntime&) = delete;
@@ -43,6 +37,11 @@ public:
     [[nodiscard]] std::uint16_t listening_port() const noexcept;
 
 private:
+    friend class HttpServerBuilder;
+
+    HttpServerRuntime(ServerConfig config, std::shared_ptr<http::Router> router,
+                      std::shared_ptr<auth::AuthService> auth_service);
+
     enum class ShutdownState : std::uint8_t {
         Serving,
         Draining,
@@ -64,7 +63,7 @@ private:
     void enter_shutdown_draining(ShutdownMachine& shutdown);
     [[nodiscard]] bool advance_shutdown_machine(ShutdownMachine& shutdown);
     void close_listener_for_shutdown(ShutdownMachine& shutdown);
-    [[nodiscard]] bool collect_drain_status(std::size_t& connection_count, std::size_t& pending_count) const;
+    bool collect_drain_status(std::size_t& connection_count, std::size_t& pending_count) const;
 
     void accept_new_connections();
     void dispatch_sub_request(ReactorRequestTask task);
@@ -84,6 +83,7 @@ private:
     std::atomic<bool> sub_reactor_fatal_error_ = false;
 
     std::shared_ptr<http::Router> router_;
+    std::shared_ptr<auth::AuthService> auth_service_;
     common::ThreadPool thread_pool_;
     std::unique_ptr<HttpRequestDispatcher> request_dispatcher_;
     std::uint64_t next_connection_token_ = 1;
@@ -97,11 +97,13 @@ class HttpServerBuilder {
 public:
     HttpServerBuilder& with_config(ServerConfig config);
     HttpServerBuilder& with_router(std::shared_ptr<http::Router> router);
+    HttpServerBuilder& with_auth_service(std::shared_ptr<auth::AuthService> auth_service);
     [[nodiscard]] HttpServerRuntime build() const;
 
 private:
     ServerConfig config_{};
     std::shared_ptr<http::Router> router_;
+    std::shared_ptr<auth::AuthService> auth_service_;
 };
 
 }  // namespace nebula::server

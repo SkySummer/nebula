@@ -33,7 +33,7 @@ enum class LogDomain : std::uint8_t {
     Common,
     Http,
     Server,
-    User,
+    Storage,
     Test,
 };
 
@@ -71,11 +71,12 @@ public:
     public:
         Entry() noexcept = default;
         Entry(Logger& logger, LogLevel level, std::string_view event);
+        ~Entry() noexcept;
+
         Entry(const Entry&) = delete;
         Entry& operator=(const Entry&) = delete;
         Entry(Entry&& other) noexcept;
         Entry& operator=(Entry&& other) = delete;
-        ~Entry() noexcept;
 
         Entry& field(Field field_value) noexcept;
 

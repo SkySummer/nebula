@@ -493,7 +493,7 @@ ParseResult parse_error(HttpStatus status, std::string_view message = {}) {
     ParseResult result;
     result.status = ParseStatus::Error;
     result.http_status = status;
-    result.error = message;
+    result.error_message = message;
     return result;
 }
 
@@ -522,19 +522,19 @@ ParseResult parse_request_line(std::string_view header_block, HttpRequest& reque
 
     const std::size_t method_end = request_line.find(' ');
     if (method_end == std::string_view::npos) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Request Line");
+        return parse_error(HttpStatus::BadRequest, "invalid request line");
     }
 
     const std::size_t path_end = request_line.find(' ', method_end + 1U);
     if (path_end == std::string_view::npos) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Request Line");
+        return parse_error(HttpStatus::BadRequest, "invalid request line");
     }
 
     const std::string_view method_text = request_line.substr(0, method_end);
     const std::string_view path_text = request_line.substr(method_end + 1U, path_end - method_end - 1U);
     version_text = request_line.substr(path_end + 1U);
     if (method_text.empty() || path_text.empty() || version_text.empty()) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Request Line");
+        return parse_error(HttpStatus::BadRequest, "invalid request line");
     }
     if (path_text.size() > max_request_target_bytes) {
         return parse_error(HttpStatus::URITooLong);
@@ -542,7 +542,7 @@ ParseResult parse_request_line(std::string_view header_block, HttpRequest& reque
 
     const VersionCheck version_check = check_http_version(version_text);
     if (version_check == VersionCheck::Invalid) {
-        return parse_error(HttpStatus::BadRequest, "Invalid HTTP Version");
+        return parse_error(HttpStatus::BadRequest, "invalid http version");
     }
     if (version_check == VersionCheck::Unsupported) {
         return parse_error(HttpStatus::HTTPVersionNotSupported);
@@ -550,11 +550,11 @@ ParseResult parse_request_line(std::string_view header_block, HttpRequest& reque
 
     request.method = parse_method(method_text);
     if (request.method == HttpMethod::Unknown) {
-        return parse_error(HttpStatus::NotImplemented, "Unsupported HTTP Method");
+        return parse_error(HttpStatus::NotImplemented, "unsupported http method");
     }
 
     if (!is_valid_request_target_form(request.method, path_text)) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Request Target Form");
+        return parse_error(HttpStatus::BadRequest, "invalid request target form");
     }
 
     request_target = path_text;
@@ -570,7 +570,7 @@ ParseResult merge_header(HttpRequest& request, const std::string& key, std::stri
     }
 
     if (!is_repeatable_header(key)) {
-        return parse_error(HttpStatus::BadRequest, "Duplicate Header");
+        return parse_error(HttpStatus::BadRequest, "duplicate header");
     }
 
     if (key != "content-length") {
@@ -580,10 +580,10 @@ ParseResult merge_header(HttpRequest& request, const std::string& key, std::stri
     const std::optional<std::size_t> existing_length = parse_content_length(header_it->second);
     const std::optional<std::size_t> incoming_length = parse_content_length(raw_value);
     if (!existing_length.has_value() || !incoming_length.has_value()) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Content-Length");
+        return parse_error(HttpStatus::BadRequest, "invalid content-length");
     }
     if (existing_length.value() != incoming_length.value()) {
-        return parse_error(HttpStatus::BadRequest, "Conflicting Content-Length");
+        return parse_error(HttpStatus::BadRequest, "conflicting content-length");
     }
 
     header_it->second = std::to_string(existing_length.value());
@@ -599,21 +599,21 @@ ParseResult parse_headers(std::string_view header_block, std::size_t request_lin
                                           : header_block.substr(cursor, next_line - cursor);
 
         if (line.empty()) {
-            return parse_error(HttpStatus::BadRequest, "Unexpected Empty Header Line");
+            return parse_error(HttpStatus::BadRequest, "unexpected empty header line");
         }
 
         const std::size_t colon = line.find(':');
         if (colon == std::string_view::npos) {
-            return parse_error(HttpStatus::BadRequest, "Invalid Header Line");
+            return parse_error(HttpStatus::BadRequest, "invalid header line");
         }
 
         const std::string_view raw_key = line.substr(0, colon);
         const std::string_view raw_value = common::trim_ascii(line.substr(colon + 1U));
         if (!is_valid_token(raw_key)) {
-            return parse_error(HttpStatus::BadRequest, "Invalid Header Key");
+            return parse_error(HttpStatus::BadRequest, "invalid header key");
         }
         if (!is_valid_header_value(raw_value)) {
-            return parse_error(HttpStatus::BadRequest, "Invalid Header Value");
+            return parse_error(HttpStatus::BadRequest, "invalid header value");
         }
 
         const ParseResult merged = merge_header(request, to_lower(raw_key), raw_value);
@@ -649,13 +649,13 @@ ParseResult parse_transfer_encoding_value(std::string_view value, bool& chunked_
             comma == std::string_view::npos ? value.substr(cursor) : value.substr(cursor, comma - cursor);
         const std::string_view token = common::trim_ascii(part);
         if (token.empty() || !is_valid_token(token)) {
-            return parse_error(HttpStatus::BadRequest, "Invalid Transfer-Encoding");
+            return parse_error(HttpStatus::BadRequest, "invalid transfer-encoding");
         }
         if (!equals_ignore_case_ascii(token, "chunked")) {
-            return parse_error(HttpStatus::NotImplemented, "Unsupported Transfer-Encoding");
+            return parse_error(HttpStatus::NotImplemented, "unsupported transfer-encoding");
         }
         if (chunked_enabled) {
-            return parse_error(HttpStatus::BadRequest, "Invalid Transfer-Encoding");
+            return parse_error(HttpStatus::BadRequest, "invalid transfer-encoding");
         }
         chunked_enabled = true;
 
@@ -666,7 +666,7 @@ ParseResult parse_transfer_encoding_value(std::string_view value, bool& chunked_
     }
 
     if (!chunked_enabled) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Transfer-Encoding");
+        return parse_error(HttpStatus::BadRequest, "invalid transfer-encoding");
     }
     return parse_complete();
 }
@@ -675,7 +675,7 @@ ParseResult parse_chunk_size_line(std::string_view line, std::size_t& chunk_size
     const std::size_t extension_pos = line.find(';');
     const std::string_view size_text = line.substr(0, extension_pos);
     if (size_text.empty() || !std::ranges::all_of(size_text, [](unsigned char ch) { return is_hex_digit(ch); })) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+        return parse_error(HttpStatus::BadRequest, "invalid chunked body");
     }
 
     std::size_t parsed_size = 0;
@@ -683,13 +683,13 @@ ParseResult parse_chunk_size_line(std::string_view line, std::size_t& chunk_size
     const auto* end = size_text.data() + size_text.size();
     const auto [ptr, ec] = std::from_chars(begin, end, parsed_size, 16);
     if (ec != std::errc() || ptr != end) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+        return parse_error(HttpStatus::BadRequest, "invalid chunked body");
     }
 
     if (extension_pos != std::string_view::npos) {
         const std::string_view extension = line.substr(extension_pos + 1U);
         if (extension.empty() || !is_valid_header_value(extension)) {
-            return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+            return parse_error(HttpStatus::BadRequest, "invalid chunked body");
         }
     }
 
@@ -700,13 +700,13 @@ ParseResult parse_chunk_size_line(std::string_view line, std::size_t& chunk_size
 ParseResult parse_chunk_trailer_line(std::string_view line) {
     const std::size_t colon = line.find(':');
     if (colon == std::string_view::npos) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Chunk Trailer");
+        return parse_error(HttpStatus::BadRequest, "invalid chunk trailer");
     }
 
     const std::string_view key = line.substr(0, colon);
     const std::string_view value = common::trim_ascii(line.substr(colon + 1U));
     if (!is_valid_token(key) || !is_valid_header_value(value)) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Chunk Trailer");
+        return parse_error(HttpStatus::BadRequest, "invalid chunk trailer");
     }
     return parse_complete();
 }
@@ -738,20 +738,20 @@ ParseResult append_chunk_payload(std::string_view buffer, std::size_t chunk_size
     }
 
     if (chunk_size > (std::numeric_limits<std::size_t>::max() - cursor)) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+        return parse_error(HttpStatus::BadRequest, "invalid chunked body");
     }
     const std::size_t chunk_data_end = cursor + chunk_size;
     if (buffer.size() < chunk_data_end) {
         return ParseResult{};
     }
     if (chunk_data_end > (std::numeric_limits<std::size_t>::max() - 2U)) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+        return parse_error(HttpStatus::BadRequest, "invalid chunked body");
     }
     if (buffer.size() < (chunk_data_end + 2U)) {
         return ParseResult{};
     }
     if (buffer[chunk_data_end] != '\r' || buffer[chunk_data_end + 1U] != '\n') {
-        return parse_error(HttpStatus::BadRequest, "Invalid Chunked Body");
+        return parse_error(HttpStatus::BadRequest, "invalid chunked body");
     }
 
     decoded_body.append(buffer.substr(cursor, chunk_size));
@@ -815,7 +815,7 @@ ParseResult resolve_request_body(const HttpRequest& request, std::size_t max_bod
     const auto transfer_encoding_it = request.headers.find("transfer-encoding");
     if (transfer_encoding_it != request.headers.end()) {
         if (request.headers.contains("content-length")) {
-            return parse_error(HttpStatus::BadRequest, "Conflicting Message Framing");
+            return parse_error(HttpStatus::BadRequest, "conflicting message framing");
         }
 
         bool chunked_enabled = false;
@@ -833,7 +833,7 @@ ParseResult resolve_request_body(const HttpRequest& request, std::size_t max_bod
     if (const auto it = request.headers.find("content-length"); it != request.headers.end()) {
         const std::optional<std::size_t> parsed = parse_content_length(it->second);
         if (!parsed.has_value()) {
-            return parse_error(HttpStatus::BadRequest, "Invalid Content-Length");
+            return parse_error(HttpStatus::BadRequest, "invalid content-length");
         }
         content_length = parsed.value();
     }
@@ -854,12 +854,12 @@ ParseResult validate_host_header(const HttpRequest& request, std::string_view ve
 
     const auto host_it = request.headers.find("host");
     if (host_it == request.headers.end()) {
-        return parse_error(HttpStatus::BadRequest, "Missing Host Header");
+        return parse_error(HttpStatus::BadRequest, "missing host header");
     }
 
     const std::string_view host_value = common::trim_ascii(host_it->second);
     if (!is_valid_host_field_value(host_value)) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Host Header");
+        return parse_error(HttpStatus::BadRequest, "invalid host header");
     }
 
     const std::optional<std::string_view> authority = request_target_authority(request.method, request_target);
@@ -868,10 +868,10 @@ ParseResult validate_host_header(const HttpRequest& request, std::string_view ve
     }
     const std::string_view expected_host = strip_authority_userinfo(authority.value());
     if (!is_valid_host_field_value(expected_host)) {
-        return parse_error(HttpStatus::BadRequest, "Invalid Request Target Authority");
+        return parse_error(HttpStatus::BadRequest, "invalid request target authority");
     }
     if (!host_values_equivalent(host_value, expected_host)) {
-        return parse_error(HttpStatus::BadRequest, "Host Header Mismatch");
+        return parse_error(HttpStatus::BadRequest, "host header mismatch");
     }
 
     return parse_complete();
@@ -1016,14 +1016,7 @@ ParseResult parse_request_body_from_context(std::string_view buffer, std::size_t
 }  // namespace
 
 void HttpRequestParseContext::reset() {
-    header_parsed = false;
-    chunked_body = false;
-    header_bytes = 0;
-    content_length = 0;
-    chunk_cursor = 0;
-    chunk_size = 0;
-    chunk_phase = ChunkedDecodePhase::ChunkSizeLine;
-    request = HttpRequest{};
+    *this = HttpRequestParseContext{};
     std::string{}.swap(decoded_chunked_body);
 }
 

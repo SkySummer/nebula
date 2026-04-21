@@ -12,7 +12,7 @@ ThreadPool::ThreadPool(std::size_t worker_count) {
     try {
         workers_.reserve(worker_count);
         for (std::size_t idx = 0; idx < worker_count; ++idx) {
-            workers_.emplace_back([this]() { worker_loop(); });
+            workers_.emplace_back(&ThreadPool::worker_loop, this);
         }
     } catch (...) {
         stop();

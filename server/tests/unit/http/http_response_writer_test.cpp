@@ -47,6 +47,15 @@ void test_plain_text_default_header_canonical() {
     expect_not_contains(serialized, "\r\ncontent-type:", "lowercase content-type should not appear");
 }
 
+void test_redirect_response_sets_location_header() {
+    const HttpResponse response = nebula::http::make_redirect_response(HttpStatus::Found, "/login");
+
+    const std::string serialized = nebula::http::serialize_http_response(response, true);
+    expect_contains(serialized, "HTTP/1.1 302 Found\r\n", "redirect response should keep requested status");
+    expect_contains(serialized, "\r\nLocation: /login\r\n", "redirect response should include location header");
+    expect_contains(serialized, "\r\nContent-Length: 0\r\n", "redirect response should default to empty body");
+}
+
 void test_header_value_with_crlf_is_filtered() {
     HttpResponse response;
     response.status = HttpStatus::OK;
@@ -123,6 +132,7 @@ int run_http_response_writer_tests() {
         {"reserved headers overridden by serializer", test_reserved_headers_overridden_by_serializer},
         {"connection close overrides user header", test_connection_close_overrides_user_header},
         {"plain text default header canonical", test_plain_text_default_header_canonical},
+        {"redirect response sets location header", test_redirect_response_sets_location_header},
         {"header value with crlf is filtered", test_header_value_with_crlf_is_filtered},
         {"header key with crlf is filtered", test_header_key_with_crlf_is_filtered},
         {"suppress body keeps content length", test_suppress_body_keeps_content_length},
