@@ -8,7 +8,7 @@
 
 部署前需要先安装以下工具和库：
 
-- `gcc 13+` 或兼容的 C++20 编译器
+- `gcc 13+` 或兼容的 C++23 编译器
 - `cmake`
 - `pkg-config`
 - OpenSSL 开发库
@@ -20,7 +20,7 @@
 ### 2. 构建服务
 
 ```bash
-cmake -S server -B server/build
+cmake -S server -B server/build -DCMAKE_BUILD_TYPE=Release
 cmake --build server/build -j"$(nproc)"
 ```
 
