@@ -110,21 +110,18 @@ std::uint16_t Listener::port() const {
 }
 
 AcceptedSocket Listener::accept_one() const {
-    AcceptedSocket accepted;
     if (fd_ < 0) {
-        return accepted;
+        return AcceptedSocket{};
     }
 
     sockaddr_in peer_addr{};
     socklen_t peer_len = sizeof(peer_addr);
     int accepted_fd = ::accept4(fd_, as_sockaddr(peer_addr), &peer_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (accepted_fd < 0) {
-        return accepted;
+        return AcceptedSocket{};
     }
 
-    accepted.fd = accepted_fd;
-    accepted.peer = format_peer(peer_addr);
-    return accepted;
+    return {.fd = accepted_fd, .peer = format_peer(peer_addr)};
 }
 
 }  // namespace nebula::net

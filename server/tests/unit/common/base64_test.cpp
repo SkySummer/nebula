@@ -1,100 +1,118 @@
-#include "nebula/common/base64.hpp"
+#include "nebula/common/codec/base64.hpp"
 
-#include <cstdint>
+#include <cstddef>
+#include <expected>
 #include <string>
 #include <vector>
 
-#include "nebula_tests/test_support.hpp"
+#include "nebula_tests/common.hpp"
 
 namespace {
 
-using nebula::common::base64_decode_to_bytes;
-using nebula::common::base64_decode_to_string;
-using nebula::common::base64_encode;
-using nebula::common::base64url_decode_to_bytes;
-using nebula::common::base64url_decode_to_string;
-using nebula::common::base64url_encode;
-using nebula::testsupport::expect_equal;
-using nebula::testsupport::expect_true;
-using nebula::testsupport::fail;
+using namespace nebula;
 
 void test_base64_string_round_trip() {
     const std::string input = "nebula auth";
-    const std::string encoded = base64_encode(input);
-    const std::optional<std::string> decoded = base64_decode_to_string(encoded);
-    expect_true(decoded.has_value(), "base64 decode should succeed for encoded string");
+    const std::string encoded = common::base64_encode(input);
+    const auto decoded = common::base64_decode_to_string(encoded);
     if (!decoded.has_value()) {
-        fail("base64 decode should succeed for encoded string");
+        test::fail("base64 decode should succeed for encoded string");
     }
-    expect_equal(decoded.value(), input, "base64 decoded string should match original");
+    test::expect_equal(*decoded, input, "base64 decoded string should match original");
 }
 
 void test_base64_known_vectors_with_padding() {
-    expect_equal(base64_encode("f"), std::string("Zg=="), "single char should be padded");
-    expect_equal(base64_encode("fo"), std::string("Zm8="), "two chars should be padded");
-    expect_equal(base64_encode("foo"), std::string("Zm9v"), "three chars should not need padding");
+    test::expect_equal(common::base64_encode("f"), std::string("Zg=="), "single char should be padded");
+    test::expect_equal(common::base64_encode("fo"), std::string("Zm8="), "two chars should be padded");
+    test::expect_equal(common::base64_encode("foo"), std::string("Zm9v"), "three chars should not need padding");
 
-    const std::vector<std::uint8_t> bytes = {0xFBU, 0xFFU};
-    expect_equal(base64_encode(bytes), std::string("+/8="), "standard alphabet should include plus slash");
+    const std::vector<std::byte> bytes = {std::byte{0xFB}, std::byte{0xFF}};
+    test::expect_equal(common::base64_encode(bytes), std::string("+/8="),
+                       "standard alphabet should include plus slash");
 
-    const std::optional<std::string> decoded = base64_decode_to_string("Zm9v");
-    expect_true(decoded.has_value(), "known vector decode should succeed");
+    const auto decoded = common::base64_decode_to_string("Zm9v");
     if (!decoded.has_value()) {
-        fail("known vector decode should succeed");
+        test::fail("known vector decode should succeed");
     }
-    expect_equal(decoded.value(), std::string("foo"), "base64 decoded known vector should match");
+    test::expect_equal(*decoded, std::string("foo"), "base64 decoded known vector should match");
+
+    const auto alphabet_bytes = common::base64_decode_to_bytes("+/8=");
+    if (!alphabet_bytes.has_value()) {
+        test::fail("standard alphabet decode should accept plus slash");
+    }
+    test::expect_equal(*alphabet_bytes, bytes, "standard alphabet decode should map plus slash via lookup table");
 }
 
 void test_base64_decode_rejects_invalid_padding_or_chars() {
-    expect_true(!base64_decode_to_string("a").has_value(), "size mod 4 equals 1 should fail");
-    expect_true(!base64_decode_to_bytes("abc*").has_value(), "non base64 char should fail");
-    expect_true(!base64_decode_to_string("=abc").has_value(), "leading padding should fail");
-    expect_true(!base64_decode_to_string("ab=c").has_value(), "middle padding should fail");
+    test::expect_true(!common::base64_decode_to_string("a").has_value(), "size mod 4 equals 1 should fail");
+    test::expect_true(!common::base64_decode_to_bytes("abc*").has_value(), "non base64 char should fail");
+    test::expect_true(!common::base64_decode_to_string("=abc").has_value(), "leading padding should fail");
+    test::expect_true(!common::base64_decode_to_string("ab=c").has_value(), "middle padding should fail");
+
+    test::expect_equal(common::base64_decode_to_string("a").error(), common::Base64DecodeError::InvalidLength,
+                       "invalid base64 length should return stable error");
+    test::expect_equal(common::base64_decode_to_bytes("abc*").error(), common::Base64DecodeError::InvalidCharacter,
+                       "invalid base64 character should return stable error");
+    test::expect_equal(common::base64_decode_to_string("=abc").error(), common::Base64DecodeError::InvalidPadding,
+                       "invalid base64 padding should return stable error");
 }
 
 void test_base64url_string_round_trip() {
     const std::string input = "nebula_test.jwt-token_123";
-    const std::string encoded = base64url_encode(input);
-    const std::optional<std::string> decoded = base64url_decode_to_string(encoded);
-    expect_true(decoded.has_value(), "decode should succeed for encoded string");
+    const std::string encoded = common::base64url_encode(input);
+    const auto decoded = common::base64url_decode_to_string(encoded);
     if (!decoded.has_value()) {
-        fail("decode should succeed for encoded string");
+        test::fail("decode should succeed for encoded string");
     }
-    expect_equal(decoded.value(), input, "decoded string should match original");
+    test::expect_equal(*decoded, input, "decoded string should match original");
 }
 
 void test_base64url_bytes_round_trip() {
-    const std::vector<std::uint8_t> input = {0x00U, 0x01U, 0x7FU, 0x80U, 0xFEU, 0xFFU};
-    const std::string encoded = base64url_encode(input);
-    const std::optional<std::vector<std::uint8_t>> decoded = base64url_decode_to_bytes(encoded);
-    expect_true(decoded.has_value(), "decode should succeed for encoded bytes");
+    const std::vector<std::byte> input = {
+        std::byte{0x00}, std::byte{0x01}, std::byte{0x7F}, std::byte{0x80}, std::byte{0xFE}, std::byte{0xFF},
+    };
+    const std::string encoded = common::base64url_encode(input);
+    const auto decoded = common::base64url_decode_to_bytes(encoded);
     if (!decoded.has_value()) {
-        fail("decode should succeed for encoded bytes");
+        test::fail("decode should succeed for encoded bytes");
     }
-    expect_equal(decoded.value(), input, "decoded bytes should match original");
+    test::expect_equal(*decoded, input, "decoded bytes should match original");
 }
 
 void test_base64url_known_vectors_without_padding() {
-    expect_equal(base64url_encode("f"), std::string("Zg"), "single char should be unpadded");
-    expect_equal(base64url_encode("fo"), std::string("Zm8"), "two chars should be unpadded");
-    expect_equal(base64url_encode("foo"), std::string("Zm9v"), "three chars should be unpadded");
+    test::expect_equal(common::base64url_encode("f"), std::string("Zg"), "single char should be unpadded");
+    test::expect_equal(common::base64url_encode("fo"), std::string("Zm8"), "two chars should be unpadded");
+    test::expect_equal(common::base64url_encode("foo"), std::string("Zm9v"), "three chars should be unpadded");
 
-    const std::optional<std::string> decoded = base64url_decode_to_string("Zm9v");
-    expect_true(decoded.has_value(), "known vector decode should succeed");
+    const auto decoded = common::base64url_decode_to_string("Zm9v");
     if (!decoded.has_value()) {
-        fail("known vector decode should succeed");
+        test::fail("known vector decode should succeed");
     }
-    expect_equal(decoded.value(), std::string("foo"), "decoded known vector should match");
+    test::expect_equal(*decoded, std::string("foo"), "decoded known vector should match");
+
+    const std::vector<std::byte> bytes = {std::byte{0xFB}, std::byte{0xFF}};
+    const auto alphabet_bytes = common::base64url_decode_to_bytes("-_8");
+    if (!alphabet_bytes.has_value()) {
+        test::fail("base64url decode should accept dash underscore");
+    }
+    test::expect_equal(*alphabet_bytes, bytes, "base64url decode should map dash underscore via lookup table");
 }
 
 void test_base64url_decode_rejects_invalid_input() {
-    expect_true(!base64url_decode_to_string("a").has_value(), "size mod 4 equals 1 should fail");
-    expect_true(!base64url_decode_to_bytes("abc*").has_value(), "non base64url char should fail");
-    expect_true(!base64url_decode_to_string("Zg==").has_value(), "padding should fail for base64url");
+    test::expect_true(!common::base64url_decode_to_string("a").has_value(), "size mod 4 equals 1 should fail");
+    test::expect_true(!common::base64url_decode_to_bytes("abc*").has_value(), "non base64url char should fail");
+    test::expect_true(!common::base64url_decode_to_string("Zg==").has_value(), "padding should fail for base64url");
+
+    test::expect_equal(common::base64url_decode_to_string("a").error(), common::Base64DecodeError::InvalidLength,
+                       "invalid base64url length should return stable error");
+    test::expect_equal(common::base64url_decode_to_bytes("abc*").error(), common::Base64DecodeError::InvalidCharacter,
+                       "invalid base64url character should return stable error");
+    test::expect_equal(common::base64url_decode_to_string("Zg==").error(), common::Base64DecodeError::InvalidPadding,
+                       "invalid base64url padding should return stable error");
 }
 
 int run_base64_tests() {
-    const std::vector<nebula::testsupport::TestCase> tests = {
+    const std::vector<nebula::test::TestCase> tests = {
         {"base64 string round trip", test_base64_string_round_trip},
         {"base64 known vectors with padding", test_base64_known_vectors_with_padding},
         {"base64 decode rejects invalid padding or chars", test_base64_decode_rejects_invalid_padding_or_chars},
@@ -104,11 +122,11 @@ int run_base64_tests() {
         {"base64url decode rejects invalid input", test_base64url_decode_rejects_invalid_input},
     };
 
-    return nebula::testsupport::run_tests(tests);
+    return nebula::test::run_tests(tests);
 }
 
 }  // namespace
 
 int main() {
-    return nebula::testsupport::run_main(run_base64_tests);
+    return nebula::test::run_main(run_base64_tests);
 }

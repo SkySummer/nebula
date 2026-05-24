@@ -23,6 +23,9 @@ public:
 
     [[nodiscard]] int fd() const;
 
+    [[nodiscard]] bool ctl(int op, int fd, std::uint32_t events) const;
+    [[nodiscard]] bool ctl(int op, int fd) const;
+
     [[nodiscard]] bool add(int fd, std::uint32_t events) const;
     [[nodiscard]] bool mod(int fd, std::uint32_t events) const;
     [[nodiscard]] bool del(int fd) const;

@@ -1,12 +1,15 @@
 #ifndef NEBULA_APP_SERVER_APP_HPP
 #define NEBULA_APP_SERVER_APP_HPP
 
+#include <atomic>
 #include <memory>
 #include <span>
 
 #include "nebula/app/startup.hpp"
-#include "nebula/auth/auth_service.hpp"
-#include "nebula/http/router.hpp"
+#include "nebula/auth/bootstrap/module.hpp"
+#include "nebula/database/connection_pool.hpp"
+#include "nebula/http/routing/router.hpp"
+#include "nebula/storage/bootstrap/module.hpp"
 
 namespace nebula::app {
 
@@ -17,16 +20,12 @@ public:
     [[nodiscard]] int run();
 
 private:
-    [[nodiscard]] std::shared_ptr<http::Router> get_router();
-    [[nodiscard]] bool ensure_auth_service_initialized();
-    [[nodiscard]] bool ensure_auth_routes_registered(const std::shared_ptr<http::Router>& router);
-    [[nodiscard]] bool ensure_storage_routes_registered(const std::shared_ptr<http::Router>& router);
-
-    StartupResult startup_;
+    StartupContext startup_;
+    std::atomic_bool run_started_ = false;
     std::shared_ptr<http::Router> router_;
-    std::shared_ptr<auth::AuthService> auth_service_;
-    bool auth_routes_registered_ = false;
-    bool storage_routes_registered_ = false;
+    std::shared_ptr<database::ConnectionPool> database_pool_;
+    std::unique_ptr<auth::AuthModule> auth_module_;
+    std::unique_ptr<storage::StorageModule> storage_module_;
 };
 
 }  // namespace nebula::app

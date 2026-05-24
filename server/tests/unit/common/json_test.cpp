@@ -1,4 +1,4 @@
-#include "nebula/common/json.hpp"
+#include "nebula/common/codec/json.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -8,33 +8,26 @@
 #include <string_view>
 #include <vector>
 
-#include "nebula_tests/test_support.hpp"
+#include "nebula_tests/common.hpp"
 
 namespace {
 
-using nebula::common::dump_json;
-using nebula::common::JsonArray;
-using nebula::common::JsonObject;
-using nebula::common::JsonParseResult;
-using nebula::common::JsonValue;
-using nebula::common::parse_json;
-using nebula::testsupport::expect_equal;
-using nebula::testsupport::expect_true;
+using namespace nebula;
 
 constexpr std::int64_t kInt64Max = std::numeric_limits<std::int64_t>::max();
 constexpr std::int64_t kInt64Min = std::numeric_limits<std::int64_t>::min();
 constexpr std::size_t kJsonNestingDepthLimit = 256U;
 
-JsonParseResult parse_or_fail(std::string_view text) {
-    const JsonParseResult result = parse_json(text);
-    expect_true(result.ok, std::format("expected parse success: {}", text));
+common::JsonParseResult parse_or_fail(std::string_view text) {
+    const common::JsonParseResult result = common::parse_json(text);
+    test::expect_true(result.ok, std::format("expected parse success: {}", text));
     return result;
 }
 
 void expect_parse_error(std::string_view text, std::string_view expected_error) {
-    const JsonParseResult result = parse_json(text);
-    expect_true(!result.ok, "expected parse failure");
-    expect_equal(result.error, std::string(expected_error), "error code should match");
+    const common::JsonParseResult result = common::parse_json(text);
+    test::expect_true(!result.ok, "expected parse failure");
+    test::expect_equal(result.error, expected_error, "error code should match");
 }
 
 std::string build_nested_array_json(std::size_t depth) {
@@ -70,68 +63,68 @@ std::string build_nested_object_array_json(std::size_t depth) {
 }
 
 void test_parse_scalar_values() {
-    const JsonParseResult integer = parse_or_fail("  -42\n");
-    expect_true(integer.value.is_int64(), "-42 should parse as int64");
-    expect_equal(*integer.value.get_if_int64(), static_cast<std::int64_t>(-42), "integer value should match");
+    const common::JsonParseResult integer = parse_or_fail("  -42\n");
+    test::expect_true(integer.value.is_int64(), "-42 should parse as int64");
+    test::expect_equal(*integer.value.get_if_int64(), std::int64_t{-42}, "integer value should match");
 
     const std::string int64_max_text = std::to_string(kInt64Max);
-    const JsonParseResult int64_max = parse_or_fail(int64_max_text);
-    expect_true(int64_max.value.is_int64(), "int64 max should parse as int64");
-    expect_equal(*int64_max.value.get_if_int64(), kInt64Max, "int64 max value should match");
+    const common::JsonParseResult int64_max = parse_or_fail(int64_max_text);
+    test::expect_true(int64_max.value.is_int64(), "int64 max should parse as int64");
+    test::expect_equal(*int64_max.value.get_if_int64(), kInt64Max, "int64 max value should match");
 
     const std::string int64_min_text = std::to_string(kInt64Min);
-    const JsonParseResult int64_min = parse_or_fail(int64_min_text);
-    expect_true(int64_min.value.is_int64(), "int64 min should parse as int64");
-    expect_equal(*int64_min.value.get_if_int64(), kInt64Min, "int64 min value should match");
+    const common::JsonParseResult int64_min = parse_or_fail(int64_min_text);
+    test::expect_true(int64_min.value.is_int64(), "int64 min should parse as int64");
+    test::expect_equal(*int64_min.value.get_if_int64(), kInt64Min, "int64 min value should match");
 
-    const JsonParseResult floating = parse_or_fail("6.25e1");
-    expect_true(floating.value.is_double(), "float should parse as double");
-    expect_true(*floating.value.get_if_double() > 62.49 && *floating.value.get_if_double() < 62.51,
-                "double value should match");
+    const common::JsonParseResult floating = parse_or_fail("6.25e1");
+    test::expect_true(floating.value.is_double(), "float should parse as double");
+    test::expect_true(*floating.value.get_if_double() > 62.49 && *floating.value.get_if_double() < 62.51,
+                      "double value should match");
 
-    const JsonParseResult boolean = parse_or_fail("true");
-    expect_true(boolean.value.is_bool(), "true should parse as bool");
-    expect_true(*boolean.value.get_if_bool(), "true bool value should match");
+    const common::JsonParseResult boolean = parse_or_fail("true");
+    test::expect_true(boolean.value.is_bool(), "true should parse as bool");
+    test::expect_true(*boolean.value.get_if_bool(), "true bool value should match");
 
-    const JsonParseResult null_result = parse_or_fail("null");
-    expect_true(null_result.value.is_null(), "null should parse as null");
+    const common::JsonParseResult null_result = parse_or_fail("null");
+    test::expect_true(null_result.value.is_null(), "null should parse as null");
 }
 
 void test_parse_object_array_and_unicode() {
-    const JsonParseResult parsed =
+    const common::JsonParseResult parsed =
         parse_or_fail(R"({"name":"nebula","items":[1,true,null,"\u4f60\u597d","\uD83D\uDE00"]})");
 
-    expect_true(parsed.value.is_object(), "root should be object");
-    const JsonObject* object = parsed.value.get_if_object();
-    expect_true(object != nullptr, "object should exist");
+    test::expect_true(parsed.value.is_object(), "root should be object");
+    const common::JsonObject* object = parsed.value.get_if_object();
+    test::expect_true(object != nullptr, "object should exist");
 
     const auto name_it = object->find("name");
-    expect_true(name_it != object->end(), "name key should exist");
-    expect_equal(*name_it->second.get_if_string(), std::string("nebula"), "name should match");
+    test::expect_true(name_it != object->end(), "name key should exist");
+    test::expect_equal(*name_it->second.get_if_string(), std::string("nebula"), "name should match");
 
     const auto items_it = object->find("items");
-    expect_true(items_it != object->end(), "items key should exist");
-    const JsonArray* items = items_it->second.get_if_array();
-    expect_true(items != nullptr, "items should be array");
-    expect_equal(items->size(), static_cast<std::size_t>(5), "items size should match");
+    test::expect_true(items_it != object->end(), "items key should exist");
+    const common::JsonArray* items = items_it->second.get_if_array();
+    test::expect_true(items != nullptr, "items should be array");
+    test::expect_equal(items->size(), std::size_t{5}, "items size should match");
 
-    expect_equal(*items->at(0).get_if_int64(), static_cast<std::int64_t>(1), "first item should be int64");
-    expect_true(*items->at(1).get_if_bool(), "second item should be true");
-    expect_true(items->at(2).is_null(), "third item should be null");
-    expect_equal(*items->at(3).get_if_string(), std::string("你好"), "unicode BMP escape should decode");
-    expect_equal(*items->at(4).get_if_string(), std::string("😀"), "unicode surrogate pair should decode");
+    test::expect_equal(*items->at(0).get_if_int64(), std::int64_t{1}, "first item should be int64");
+    test::expect_true(*items->at(1).get_if_bool(), "second item should be true");
+    test::expect_true(items->at(2).is_null(), "third item should be null");
+    test::expect_equal(*items->at(3).get_if_string(), std::string("你好"), "unicode BMP escape should decode");
+    test::expect_equal(*items->at(4).get_if_string(), std::string("😀"), "unicode surrogate pair should decode");
 }
 
 void test_parse_errors() {
-    const JsonParseResult empty = parse_json("\n\t ");
-    expect_true(!empty.ok, "empty input should fail");
-    expect_equal(empty.error, std::string("empty_input"), "empty input error should match");
-    expect_equal(empty.error_offset, static_cast<std::size_t>(0), "empty input offset should be 0");
+    const common::JsonParseResult empty = common::parse_json("\n\t ");
+    test::expect_true(!empty.ok, "empty input should fail");
+    test::expect_equal(empty.error, std::string("empty_input"), "empty input error should match");
+    test::expect_equal(empty.error_offset, std::size_t{0}, "empty input offset should be 0");
 
-    const JsonParseResult trailing = parse_json("true x");
-    expect_true(!trailing.ok, "trailing chars should fail");
-    expect_equal(trailing.error, std::string("extra_characters"), "trailing chars error should match");
-    expect_equal(trailing.error_offset, static_cast<std::size_t>(5), "trailing chars offset should match");
+    const common::JsonParseResult trailing = common::parse_json("true x");
+    test::expect_true(!trailing.ok, "trailing chars should fail");
+    test::expect_equal(trailing.error, std::string("extra_characters"), "trailing chars error should match");
+    test::expect_equal(trailing.error_offset, std::size_t{5}, "trailing chars offset should match");
 
     const auto int64_max_u64 = static_cast<std::uint64_t>(kInt64Max);
     const std::string overflow_positive = std::to_string(int64_max_u64 + 1ULL);
@@ -153,10 +146,10 @@ void test_parse_string_boundary_errors() {
     expect_parse_error("\"abc", "unterminated_string");
     expect_parse_error("\"abc\\", "unterminated_string");
 
-    const JsonParseResult control_character = parse_json("{\"k\":\"line\nfeed\"}");
-    expect_true(!control_character.ok, "string with raw control character should fail");
-    expect_equal(control_character.error, std::string("invalid_string_character"),
-                 "raw control character error should match");
+    const common::JsonParseResult control_character = common::parse_json("{\"k\":\"line\nfeed\"}");
+    test::expect_true(!control_character.ok, "string with raw control character should fail");
+    test::expect_equal(control_character.error, std::string("invalid_string_character"),
+                       "raw control character error should match");
 
     expect_parse_error(R"("\uD800\uE000")", "invalid_unicode_surrogate");
     expect_parse_error(R"("\uDC00")", "invalid_unicode_surrogate");
@@ -189,21 +182,21 @@ void test_parse_string_boundary_errors() {
 }
 
 void test_dump_compact_sorted_keys() {
-    JsonObject object;
-    object.emplace("b", JsonValue(static_cast<std::int64_t>(2)));
-    object.emplace("a", JsonValue("x"));
-    object.emplace("c", JsonValue(nullptr));
+    common::JsonObject object;
+    object.emplace("b", common::JsonValue(std::int64_t{2}));
+    object.emplace("a", common::JsonValue("x"));
+    object.emplace("c", common::JsonValue(nullptr));
 
-    const std::string dumped = dump_json(JsonValue(std::move(object)));
-    expect_equal(dumped, std::string(R"({"a":"x","b":2,"c":null})"), "compact dump should match");
+    const std::string dumped = common::dump_json(common::JsonValue(std::move(object)));
+    test::expect_equal(dumped, std::string(R"({"a":"x","b":2,"c":null})"), "compact dump should match");
 }
 
 void test_dump_pretty_output() {
-    JsonObject object;
-    object.emplace("z", JsonValue(JsonArray{JsonValue(true), JsonValue(nullptr)}));
-    object.emplace("a", JsonValue(static_cast<std::int64_t>(1)));
+    common::JsonObject object;
+    object.emplace("z", common::JsonValue(common::JsonArray{common::JsonValue(true), common::JsonValue(nullptr)}));
+    object.emplace("a", common::JsonValue(std::int64_t{1}));
 
-    const std::string dumped = dump_json(JsonValue(std::move(object)), 2);
+    const std::string dumped = common::dump_json(common::JsonValue(std::move(object)), 2);
     const std::string expected =
         "{\n"
         "  \"a\": 1,\n"
@@ -212,7 +205,7 @@ void test_dump_pretty_output() {
         "    null\n"
         "  ]\n"
         "}";
-    expect_equal(dumped, expected, "pretty dump should match");
+    test::expect_equal(dumped, expected, "pretty dump should match");
 }
 
 void test_dump_invalid_utf8_string_as_unicode_escape() {
@@ -223,96 +216,98 @@ void test_dump_invalid_utf8_string_as_unicode_escape() {
     invalid_utf8.push_back(static_cast<char>(0x80));
     invalid_utf8.push_back('C');
 
-    const std::string dumped = dump_json(JsonValue(invalid_utf8));
-    expect_equal(dumped, std::string(R"("A\u00c3B\u0080C")"), "invalid utf8 bytes should be unicode-escaped");
+    const std::string dumped = common::dump_json(common::JsonValue(invalid_utf8));
+    test::expect_equal(dumped, std::string(R"("A\u00c3B\u0080C")"), "invalid utf8 bytes should be unicode-escaped");
 
-    const JsonParseResult reparsed = parse_or_fail(dumped);
-    expect_true(reparsed.value.is_string(), "reparsed value should be string");
+    const common::JsonParseResult reparsed = parse_or_fail(dumped);
+    test::expect_true(reparsed.value.is_string(), "reparsed value should be string");
 }
 
 void test_round_trip() {
     const std::string input = R"({"m":[1,2,3],"n":{"k":"v"},"p":false})";
-    const JsonParseResult parsed = parse_or_fail(input);
+    const common::JsonParseResult parsed = parse_or_fail(input);
 
-    const std::string dumped = dump_json(parsed.value, 2);
-    const JsonParseResult reparsed = parse_json(dumped);
+    const std::string dumped = common::dump_json(parsed.value, 2);
+    const common::JsonParseResult reparsed = common::parse_json(dumped);
 
-    expect_true(reparsed.ok, "round trip parse should succeed");
-    expect_true(reparsed.value == parsed.value, "round trip value should match");
+    test::expect_true(reparsed.ok, "round trip parse should succeed");
+    test::expect_true(reparsed.value == parsed.value, "round trip value should match");
 }
 
 void test_round_trip_preserves_double_integer_type() {
-    const JsonParseResult parsed = parse_or_fail(R"({"a":1.0})");
-    expect_true(parsed.value.is_object(), "root should be object");
-    const JsonObject* parsed_object = parsed.value.get_if_object();
-    expect_true(parsed_object != nullptr, "parsed object should exist");
+    const common::JsonParseResult parsed = parse_or_fail(R"({"a":1.0})");
+    test::expect_true(parsed.value.is_object(), "root should be object");
+    const common::JsonObject* parsed_object = parsed.value.get_if_object();
+    test::expect_true(parsed_object != nullptr, "parsed object should exist");
     const auto parsed_it = parsed_object->find("a");
-    expect_true(parsed_it != parsed_object->end(), "a key should exist");
-    expect_true(parsed_it->second.is_double(), "a should parse as double");
+    test::expect_true(parsed_it != parsed_object->end(), "a key should exist");
+    test::expect_true(parsed_it->second.is_double(), "a should parse as double");
 
-    const std::string dumped = dump_json(parsed.value);
-    expect_equal(dumped, std::string(R"({"a":1.0})"), "dump should keep floating-point marker");
+    const std::string dumped = common::dump_json(parsed.value);
+    test::expect_equal(dumped, std::string(R"({"a":1.0})"), "dump should keep floating-point marker");
 
-    const JsonParseResult reparsed = parse_or_fail(dumped);
-    expect_true(reparsed.value == parsed.value, "round trip should preserve double type");
+    const common::JsonParseResult reparsed = parse_or_fail(dumped);
+    test::expect_true(reparsed.value == parsed.value, "round trip should preserve double type");
 }
 
 void test_dump_non_finite_double_as_null() {
-    const JsonArray values = {
-        JsonValue(std::numeric_limits<double>::quiet_NaN()),
-        JsonValue(std::numeric_limits<double>::infinity()),
-        JsonValue(-std::numeric_limits<double>::infinity()),
-        JsonValue(1.5),
+    const common::JsonArray values = {
+        common::JsonValue(std::numeric_limits<double>::quiet_NaN()),
+        common::JsonValue(std::numeric_limits<double>::infinity()),
+        common::JsonValue(-std::numeric_limits<double>::infinity()),
+        common::JsonValue(1.5),
     };
 
-    const std::string dumped = dump_json(JsonValue(values));
-    expect_equal(dumped, std::string(R"([null,null,null,1.5])"), "non-finite doubles should dump as null");
+    const std::string dumped = common::dump_json(common::JsonValue(values));
+    test::expect_equal(dumped, std::string(R"([null,null,null,1.5])"), "non-finite doubles should dump as null");
 
-    const JsonParseResult reparsed = parse_or_fail(dumped);
-    const JsonArray* reparsed_values = reparsed.value.get_if_array();
-    expect_true(reparsed_values != nullptr, "reparsed value should be array");
-    expect_equal(reparsed_values->size(), static_cast<std::size_t>(4), "reparsed array size should match");
-    expect_true(reparsed_values->at(0).is_null(), "nan should become null");
-    expect_true(reparsed_values->at(1).is_null(), "positive infinity should become null");
-    expect_true(reparsed_values->at(2).is_null(), "negative infinity should become null");
-    expect_true(reparsed_values->at(3).is_double(), "finite double should stay double");
+    const common::JsonParseResult reparsed = parse_or_fail(dumped);
+    const common::JsonArray* reparsed_values = reparsed.value.get_if_array();
+    test::expect_true(reparsed_values != nullptr, "reparsed value should be array");
+    test::expect_equal(reparsed_values->size(), std::size_t{4}, "reparsed array size should match");
+    test::expect_true(reparsed_values->at(0).is_null(), "nan should become null");
+    test::expect_true(reparsed_values->at(1).is_null(), "positive infinity should become null");
+    test::expect_true(reparsed_values->at(2).is_null(), "negative infinity should become null");
+    test::expect_true(reparsed_values->at(3).is_double(), "finite double should stay double");
 }
 
 void test_construct_string_from_string_view() {
     std::string backing = "nebula";
     const std::string_view view = backing;
-    const JsonValue value(view);
+    const common::JsonValue value(view);
 
     backing[0] = 'N';
-    expect_true(value.is_string(), "string_view constructor should produce string");
-    expect_equal(*value.get_if_string(), std::string("nebula"), "constructed string should be copied");
+    test::expect_true(value.is_string(), "string_view constructor should produce string");
+    test::expect_equal(*value.get_if_string(), std::string("nebula"), "constructed string should be copied");
 }
 
 void test_parse_nesting_depth_limit() {
     const std::string at_limit = build_nested_array_json(kJsonNestingDepthLimit);
-    const JsonParseResult at_limit_result = parse_or_fail(at_limit);
-    expect_true(at_limit_result.value.is_array(), "max depth input should parse");
+    const common::JsonParseResult at_limit_result = parse_or_fail(at_limit);
+    test::expect_true(at_limit_result.value.is_array(), "max depth input should parse");
 
     const std::string above_limit = build_nested_array_json(kJsonNestingDepthLimit + 1U);
-    const JsonParseResult above_limit_result = parse_json(above_limit);
-    expect_true(!above_limit_result.ok, "over max depth input should fail");
-    expect_equal(above_limit_result.error, std::string("max_depth_exceeded"), "depth limit error should match");
-    expect_equal(above_limit_result.error_offset, kJsonNestingDepthLimit, "depth limit error offset should match");
+    const common::JsonParseResult above_limit_result = common::parse_json(above_limit);
+    test::expect_true(!above_limit_result.ok, "over max depth input should fail");
+    test::expect_equal(above_limit_result.error, std::string("max_depth_exceeded"), "depth limit error should match");
+    test::expect_equal(above_limit_result.error_offset, kJsonNestingDepthLimit,
+                       "depth limit error offset should match");
 }
 
 void test_parse_mixed_nesting_depth_limit() {
     const std::string at_limit = build_nested_object_array_json(kJsonNestingDepthLimit);
-    const JsonParseResult at_limit_result = parse_or_fail(at_limit);
-    expect_true(at_limit_result.value.is_object(), "max depth mixed input should parse");
+    const common::JsonParseResult at_limit_result = parse_or_fail(at_limit);
+    test::expect_true(at_limit_result.value.is_object(), "max depth mixed input should parse");
 
     const std::string above_limit = build_nested_object_array_json(kJsonNestingDepthLimit + 1U);
-    const JsonParseResult above_limit_result = parse_json(above_limit);
-    expect_true(!above_limit_result.ok, "over max depth mixed input should fail");
-    expect_equal(above_limit_result.error, std::string("max_depth_exceeded"), "mixed depth limit error should match");
+    const common::JsonParseResult above_limit_result = common::parse_json(above_limit);
+    test::expect_true(!above_limit_result.ok, "over max depth mixed input should fail");
+    test::expect_equal(above_limit_result.error, std::string("max_depth_exceeded"),
+                       "mixed depth limit error should match");
 }
 
 int run_json_tests() {
-    const std::vector<nebula::testsupport::TestCase> tests = {
+    const std::vector<nebula::test::TestCase> tests = {
         {"parse scalar values", test_parse_scalar_values},
         {"parse object array and unicode", test_parse_object_array_and_unicode},
         {"parse errors", test_parse_errors},
@@ -327,11 +322,11 @@ int run_json_tests() {
         {"parse nesting depth limit", test_parse_nesting_depth_limit},
         {"parse mixed nesting depth limit", test_parse_mixed_nesting_depth_limit},
     };
-    return nebula::testsupport::run_tests(tests);
+    return nebula::test::run_tests(tests);
 }
 
 }  // namespace
 
 int main() {
-    return nebula::testsupport::run_main(run_json_tests);
+    return nebula::test::run_main(run_json_tests);
 }

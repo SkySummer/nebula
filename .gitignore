@@ -3,5 +3,5 @@
 .vscode/
 build/
 cmake-build-*/
-runtime/
+/runtime/
 *.log

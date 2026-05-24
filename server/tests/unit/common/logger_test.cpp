@@ -1,37 +1,30 @@
-#include "nebula/common/logger.hpp"
+#include "nebula/common/log/logger.hpp"
 
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <limits>
 #include <regex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
-#include "nebula_tests/test_support.hpp"
+#include "nebula/common/codec/json.hpp"
+#include "nebula_tests/common.hpp"
 
 namespace {
 
-using nebula::common::LogDomain;
-using nebula::common::Logger;
-using nebula::common::LogLevel;
-using nebula::testsupport::capture_stderr;
-using nebula::testsupport::expect_contains;
-using nebula::testsupport::expect_equal;
-using nebula::testsupport::expect_not_contains;
-using nebula::testsupport::expect_true;
-using nebula::testsupport::find_single_regular_file;
-using nebula::testsupport::read_all;
-using nebula::testsupport::TempDir;
+using namespace nebula;
 
-std::string first_line(std::string_view text) {
-    const std::size_t pos = text.find('\n');
-    if (pos == std::string_view::npos) {
-        return std::string(text);
-    }
-    return std::string(text.substr(0, pos));
-}
+struct ParsedLogLine {
+    std::string ts;
+    std::string level;
+    std::string event;
+    std::unordered_map<std::string, std::string> fields;
+};
 
 std::string logger_current_date_text() {
     const auto now = std::chrono::system_clock::now();
@@ -54,275 +47,417 @@ std::size_t count_regular_files(const std::filesystem::path& dir) {
     return count;
 }
 
-std::size_t count_occurrences(std::string_view text, std::string_view needle) {
-    if (needle.empty()) {
-        return 0U;
+ParsedLogLine parse_log_line(std::string_view line) {
+    if (line.empty() || line.front() != '[') {
+        test::fail(std::format("log line missing timestamp bracket: {}", std::string(line)));
     }
 
-    std::size_t count = 0U;
-    std::size_t pos = 0U;
-    while (true) {
-        pos = text.find(needle, pos);
-        if (pos == std::string_view::npos) {
-            return count;
+    const std::size_t timestamp_separator = line.find("] [");
+    if (timestamp_separator == std::string_view::npos) {
+        test::fail(std::format("log line missing timestamp separator: {}", std::string(line)));
+    }
+
+    const std::size_t level_open = timestamp_separator + 2U;
+    const std::size_t level_close = line.find("] ", level_open);
+    if (level_close == std::string_view::npos) {
+        test::fail(std::format("log line missing level separator: {}", std::string(line)));
+    }
+
+    ParsedLogLine parsed = {
+        .ts = std::string(line.substr(1U, timestamp_separator - 1U)),
+        .level = std::string(line.substr(level_open + 1U, level_close - level_open - 1U)),
+        .event = {},
+        .fields = {},
+    };
+
+    const std::string_view remainder = line.substr(level_close + 2U);
+    const std::size_t field_separator = remainder.find(": ");
+    if (field_separator == std::string_view::npos) {
+        parsed.event = std::string(remainder);
+        return parsed;
+    }
+
+    parsed.event = std::string(remainder.substr(0, field_separator));
+    std::size_t field_start = field_separator + 2U;
+    while (field_start < remainder.size()) {
+        const std::size_t field_end = remainder.find(", ", field_start);
+        const std::string_view field_text = field_end == std::string_view::npos
+                                                ? remainder.substr(field_start)
+                                                : remainder.substr(field_start, field_end - field_start);
+        const std::size_t equals = field_text.find('=');
+        if (equals == std::string_view::npos) {
+            test::fail(std::format("log field missing '=': {}", std::string(field_text)));
         }
-        ++count;
-        pos += needle.size();
+
+        std::string value(field_text.substr(equals + 1U));
+        if (!value.empty() && value.front() == '"') {
+            const common::JsonParseResult parsed_value = common::parse_json(value);
+            test::expect_true(parsed_value.ok, std::format("quoted field should parse as json string: {}", value));
+            const std::string* string_value = parsed_value.value.get_if_string();
+            test::expect_true(string_value != nullptr, std::format("quoted field should decode to string: {}", value));
+            value = *string_value;
+        }
+
+        parsed.fields.emplace(std::string(field_text.substr(0, equals)), std::move(value));
+        if (field_end == std::string_view::npos) {
+            break;
+        }
+        field_start = field_end + 2U;
     }
+
+    return parsed;
 }
 
-void test_to_string_covers_levels() {
-    expect_equal(std::string(nebula::common::to_string(LogLevel::Trace)), std::string("TRACE"), "trace text");
-    expect_equal(std::string(nebula::common::to_string(LogLevel::Debug)), std::string("DEBUG"), "debug text");
-    expect_equal(std::string(nebula::common::to_string(LogLevel::Info)), std::string("INFO"), "info text");
-    expect_equal(std::string(nebula::common::to_string(LogLevel::Warning)), std::string("WARN"), "warn text");
-    expect_equal(std::string(nebula::common::to_string(LogLevel::Error)), std::string("ERROR"), "error text");
-    expect_equal(std::string(nebula::common::to_string(LogLevel::Fatal)), std::string("FATAL"), "fatal text");
+std::vector<ParsedLogLine> parse_log_lines(std::string_view text) {
+    std::vector<ParsedLogLine> lines;
+
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t end = text.find('\n', start);
+        const std::string_view line =
+            end == std::string_view::npos ? text.substr(start) : text.substr(start, end - start);
+        start = end == std::string_view::npos ? text.size() : end + 1U;
+
+        if (line.empty()) {
+            continue;
+        }
+
+        lines.push_back(parse_log_line(line));
+    }
+
+    return lines;
 }
 
-void test_to_string_covers_domains() {
-    expect_equal(std::string(nebula::common::to_string(LogDomain::App)), std::string("app"), "app text");
-    expect_equal(std::string(nebula::common::to_string(LogDomain::Auth)), std::string("auth"), "auth text");
-    expect_equal(std::string(nebula::common::to_string(LogDomain::Common)), std::string("common"), "common text");
-    expect_equal(std::string(nebula::common::to_string(LogDomain::Http)), std::string("http"), "http text");
-    expect_equal(std::string(nebula::common::to_string(LogDomain::Server)), std::string("server"), "server text");
-    expect_equal(std::string(nebula::common::to_string(LogDomain::Storage)), std::string("storage"), "storage text");
-    expect_equal(std::string(nebula::common::to_string(LogDomain::Test)), std::string("test"), "test text");
+const std::string& require_field(const ParsedLogLine& line, std::string_view key) {
+    if (key == "ts") {
+        return line.ts;
+    }
+    if (key == "level") {
+        return line.level;
+    }
+    if (key == "event") {
+        return line.event;
+    }
+
+    const auto it = line.fields.find(std::string(key));
+    if (it == line.fields.end()) {
+        test::fail(std::format("missing field '{}'", key));
+    }
+    return it->second;
+}
+
+void expect_string_field(const ParsedLogLine& line, std::string_view key, std::string_view expected,
+                         std::string_view message) {
+    test::expect_equal(require_field(line, key), std::string(expected), message);
+}
+
+void expect_int_field(const ParsedLogLine& line, std::string_view key, std::int64_t expected,
+                      std::string_view message) {
+    const std::string& value = require_field(line, key);
+    test::expect_equal(std::stoll(value), expected, message);
+}
+
+void expect_bool_field(const ParsedLogLine& line, std::string_view key, bool expected, std::string_view message) {
+    test::expect_equal(require_field(line, key), std::string(expected ? "true" : "false"), message);
+}
+
+void expect_ts_field(const ParsedLogLine& line, std::string_view message) {
+    const std::regex pattern(R"(^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{2}:\d{2}(:\d{2})?)$)");
+    test::expect_true(std::regex_match(line.ts, pattern), message);
+}
+
+void test_uninitialized_logger_writes_all_levels_to_stderr_only() {
+    const std::string stderr_text = test::capture_stderr([]() {
+        common::Logger::instance().trace("trace before initialize").field("stage", "boot");
+        common::Logger::instance().debug("debug before initialize").field("stage", "boot");
+        common::Logger::instance().info("info before initialize").field("stage", "boot");
+    });
+
+    const std::vector<ParsedLogLine> lines = parse_log_lines(stderr_text);
+    test::expect_equal(lines.size(), std::size_t{3}, "uninitialized logger should emit three lines");
+
+    test::expect_equal(lines[0].level, std::string("TRACE"), "trace level should match");
+    expect_string_field(lines[0], "event", "trace before initialize", "trace event should keep spaces");
+    expect_string_field(lines[0], "stage", "boot", "trace stage should match");
+
+    test::expect_equal(lines[1].level, std::string("DEBUG"), "debug level should match");
+    expect_string_field(lines[1], "event", "debug before initialize", "debug event should keep spaces");
+
+    test::expect_equal(lines[2].level, std::string("INFO"), "info level should match");
+    expect_string_field(lines[2], "event", "info before initialize", "info event should keep spaces");
 }
 
 void test_log_filename_uses_daily_pattern() {
-    const TempDir dir("nebula-logger-name");
+    const test::TempDir dir("nebula-logger-name");
 
-    Logger::instance().initialize(LogLevel::Info, dir.path(), false);
-    Logger::instance().info(nebula::common::LogDomain::Test, "server bootstrap");
+    common::Logger::instance().initialize({.level = common::LogLevel::Info, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance().info("server bootstrap");
 
-    const std::filesystem::path log_file = find_single_regular_file(dir.path());
-    const std::string filename = log_file.filename().string();
+    const std::filesystem::path log_file = test::find_single_regular_file(dir.path());
+    const std::string filename = log_file.filename().generic_string();
     const std::regex pattern(R"(^nebula-\d{4}-\d{2}-\d{2}\.log$)");
-    expect_true(std::regex_match(filename, pattern), "log filename should match nebula-YYYY-MM-DD.log");
+    test::expect_true(std::regex_match(filename, pattern), "log filename should match nebula-YYYY-MM-DD.log");
 }
 
 void test_min_level_filtering() {
-    const TempDir dir("nebula-logger-level");
+    const test::TempDir dir("nebula-logger-level");
 
-    Logger::instance().initialize(LogLevel::Info, dir.path(), false);
-    Logger::instance().debug(nebula::common::LogDomain::Test, "debug should be filtered");
-    Logger::instance().info(nebula::common::LogDomain::Test, "info should be written");
-    Logger::instance().error(nebula::common::LogDomain::Test, "error should be written");
+    common::Logger::instance().initialize({.level = common::LogLevel::Info, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance().debug("debug should be filtered");
+    common::Logger::instance().info("info should be written");
+    common::Logger::instance().error("error should be written");
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    expect_contains(content, "] [INFO] info should be written", "info log should exist");
-    expect_contains(content, "] [ERROR] error should be written", "error log should exist");
-    expect_not_contains(content, "debug should be filtered", "debug log should be filtered");
+    const std::vector<ParsedLogLine> lines =
+        parse_log_lines(test::read_all(test::find_single_regular_file(dir.path())));
+    test::expect_equal(lines.size(), std::size_t{2}, "filtered output should keep only info and error");
+    expect_string_field(lines[0], "event", "info should be written", "info event should remain");
+    test::expect_equal(lines[0].level, std::string("INFO"), "info level should remain");
+    expect_string_field(lines[1], "event", "error should be written", "error event should remain");
+    test::expect_equal(lines[1].level, std::string("ERROR"), "error level should remain");
 }
 
-void test_iso8601_prefix_and_level_spacing() {
-    const TempDir dir("nebula-logger-iso");
+void test_bracketed_iso8601_prefix_and_level_spacing() {
+    const test::TempDir dir("nebula-logger-iso");
 
-    Logger::instance().initialize(LogLevel::Info, dir.path(), false);
-    Logger::instance().info(nebula::common::LogDomain::Test, "server started").field("port", 8080);
+    common::Logger::instance().initialize({.level = common::LogLevel::Info, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance().info("server started").field("port", 8080);
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    const std::string line = first_line(content);
-    const std::regex pattern(
-        R"(^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{2}:\d{2}(:\d{2})?)\] \[INFO\] server started: domain=test, port=8080$)");
-    expect_true(std::regex_match(line, pattern), "prefix should be ISO 8601 and contain '] [INFO]'");
+    const std::string raw_output = test::read_all(test::find_single_regular_file(dir.path()));
+    const std::vector<ParsedLogLine> lines = parse_log_lines(raw_output);
+    test::expect_equal(lines.size(), std::size_t{1}, "single log line should be written");
+    expect_ts_field(lines.front(), "ts should use iso8601 with milliseconds");
+    test::expect_equal(lines.front().level, std::string("INFO"), "info level should be uppercase");
+    expect_string_field(lines.front(), "event", "server started", "event should keep spaces");
+    expect_int_field(lines.front(), "port", 8080, "port should remain numeric");
+    test::expect_contains(raw_output, "[", "raw output should include bracketed prefix");
+    test::expect_contains(raw_output, "] [INFO] server started", "raw output should keep bracketed level prefix");
 }
 
 void test_structured_fields_format() {
-    const TempDir dir("nebula-logger-structured");
+    const test::TempDir dir("nebula-logger-structured");
 
-    Logger::instance().initialize(LogLevel::Trace, dir.path(), false);
-    Logger::instance()
-        .warn(nebula::common::LogDomain::Test, "accept failed")
+    common::Logger::instance().initialize({.level = common::LogLevel::Trace, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance()
+        .warn("accept failed")
         .field("fd", 12)
         .field("peer", "127.0.0.1:54321")
         .field("decision", "keep_running");
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    expect_contains(content, "accept failed: domain=test, fd=12, peer=127.0.0.1:54321, decision=keep_running",
-                    "structured format should match");
-}
-
-void test_domain_overload_adds_domain_field() {
-    const TempDir dir("nebula-logger-domain-overload");
-
-    Logger::instance().initialize(LogLevel::Trace, dir.path(), false);
-    Logger::instance().warn(LogDomain::Auth, "login rejected").field("error", "invalid_request_body");
-
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    expect_contains(content, "login rejected: domain=auth, error=invalid_request_body",
-                    "domain overload should append domain field");
+    const ParsedLogLine line = parse_log_lines(test::read_all(test::find_single_regular_file(dir.path()))).front();
+    test::expect_equal(line.level, std::string("WARNING"), "warn should serialize as WARNING");
+    expect_string_field(line, "event", "accept failed", "event should keep spaces");
+    expect_int_field(line, "fd", 12, "fd should remain numeric");
+    expect_string_field(line, "peer", "127.0.0.1:54321", "peer should match");
+    expect_string_field(line, "decision", "keep_running", "decision should match");
 }
 
 void test_entry_logs_on_destruction() {
-    const TempDir dir("nebula-logger-entry");
+    const test::TempDir dir("nebula-logger-entry");
 
-    Logger::instance().initialize(LogLevel::Trace, dir.path(), false);
-    Logger::instance()
-        .warn(nebula::common::LogDomain::Test, "accept failed")
-        .field("fd", 12)
-        .field("decision", "keep_running");
+    common::Logger::instance().initialize({.level = common::LogLevel::Trace, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance().warn("accept failed").field("fd", 12).field("decision", "keep_running");
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    expect_contains(content, "accept failed: domain=test, fd=12, decision=keep_running",
-                    "entry should emit log when scope exits");
+    const std::vector<ParsedLogLine> lines =
+        parse_log_lines(test::read_all(test::find_single_regular_file(dir.path())));
+    test::expect_equal(lines.size(), std::size_t{1}, "entry should emit once on destruction");
+    expect_string_field(lines.front(), "event", "accept failed", "destruction emit event should match");
 }
 
 void test_entry_emit_does_not_duplicate() {
-    const TempDir dir("nebula-logger-entry-emit-once");
+    const test::TempDir dir("nebula-logger-entry-emit-once");
 
-    Logger::instance().initialize(LogLevel::Trace, dir.path(), false);
-    Logger::instance()
-        .warn(nebula::common::LogDomain::Test, "accept failed")
-        .field("fd", 12)
-        .field("decision", "keep_running")
-        .emit();
+    common::Logger::instance().initialize({.level = common::LogLevel::Trace, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance().warn("accept failed").field("fd", 12).field("decision", "keep_running").emit();
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    const std::string log_snippet = "accept failed: domain=test, fd=12, decision=keep_running";
-    expect_equal(count_occurrences(content, log_snippet), static_cast<std::size_t>(1),
-                 ".emit should not duplicate log in destructor");
+    const std::vector<ParsedLogLine> lines =
+        parse_log_lines(test::read_all(test::find_single_regular_file(dir.path())));
+    test::expect_equal(lines.size(), std::size_t{1}, ".emit should not duplicate log in destructor");
 }
 
-void test_field_message_format() {
-    const TempDir dir("nebula-logger-field-message");
+void test_status_text_field_format() {
+    const test::TempDir dir("nebula-logger-field-message");
 
-    Logger::instance().initialize(LogLevel::Trace, dir.path(), false);
-    Logger::instance()
-        .info(nebula::common::LogDomain::Test, "request completed")
-        .field("status", 405, "Method Not Allowed")
+    common::Logger::instance().initialize({.level = common::LogLevel::Trace, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance()
+        .info("request completed")
+        .field("status", 405)
+        .field("status_text", "Method Not Allowed")
         .field("fd", 6);
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    expect_contains(content, "request completed: domain=test, status=405 (Method Not Allowed), fd=6",
-                    "field message should render as key=value (message)");
+    const ParsedLogLine line = parse_log_lines(test::read_all(test::find_single_regular_file(dir.path()))).front();
+    expect_string_field(line, "event", "request completed", "request event should keep spaces");
+    expect_int_field(line, "status", 405, "status should remain numeric");
+    expect_string_field(line, "status_text", "Method Not Allowed", "status text should be split into dedicated field");
+    expect_int_field(line, "fd", 6, "fd should remain numeric");
+}
+
+void test_string_field_uses_json_escape_sequences() {
+    const test::TempDir dir("nebula-logger-string-escape");
+
+    common::Logger::instance().initialize({.level = common::LogLevel::Trace, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance().info("escape text").field("message", "line1\nline2\t\"quoted\"\\tail");
+
+    const std::string raw_output = test::read_all(test::find_single_regular_file(dir.path()));
+    const ParsedLogLine line = parse_log_lines(raw_output).front();
+    expect_string_field(line, "event", "escape text", "event should remain unescaped");
+    expect_string_field(line, "message", "line1\nline2\t\"quoted\"\\tail",
+                        "string field should round-trip through JSON escape sequences");
+    test::expect_contains(raw_output, R"(message="line1\nline2\t\"quoted\"\\tail")",
+                          "string field should be emitted as quoted JSON-escaped text");
 }
 
 void test_bool_field_formats_true_false() {
-    const TempDir dir("nebula-logger-bool-field");
+    const test::TempDir dir("nebula-logger-bool-field");
 
-    Logger::instance().initialize(LogLevel::Trace, dir.path(), false);
-    Logger::instance()
-        .info(nebula::common::LogDomain::Test, "runtime state")
+    common::Logger::instance().initialize({.level = common::LogLevel::Trace, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance()
+        .info("runtime state")
         .field("stop_requested", true)
-        .field("running", false);
+        .field("running", false)
+        .field("attempt", 3)
+        .field("nothing", nullptr)
+        .field("positive_limit", std::numeric_limits<double>::infinity())
+        .field("negative_limit", -std::numeric_limits<double>::infinity())
+        .field("not_a_number", std::numeric_limits<double>::quiet_NaN());
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    expect_contains(content, "runtime state: domain=test, stop_requested=true, running=false",
-                    "bool field should render as true/false text");
+    const std::string raw_output = test::read_all(test::find_single_regular_file(dir.path()));
+    const ParsedLogLine line = parse_log_lines(raw_output).front();
+    expect_bool_field(line, "stop_requested", true, "stop_requested should be bool");
+    expect_bool_field(line, "running", false, "running should be bool");
+    expect_int_field(line, "attempt", 3, "attempt should remain numeric");
+    expect_string_field(line, "nothing", "null", "nullptr should serialize as null literal");
+    expect_string_field(line, "positive_limit", "inf", "positive infinity should use inf literal");
+    expect_string_field(line, "negative_limit", "-inf", "negative infinity should use -inf literal");
+    expect_string_field(line, "not_a_number", "nan", "nan should use nan literal");
+    test::expect_contains(raw_output, "stop_requested=true", "bool true should stay unquoted");
+    test::expect_contains(raw_output, "running=false", "bool false should stay unquoted");
+    test::expect_contains(raw_output, "attempt=3", "integral field should stay unquoted");
+    test::expect_contains(raw_output, "nothing=null", "nullptr field should use null literal");
+    test::expect_contains(raw_output, "positive_limit=inf", "positive infinity should use inf literal");
+    test::expect_contains(raw_output, "negative_limit=-inf", "negative infinity should use -inf literal");
+    test::expect_contains(raw_output, "not_a_number=nan", "nan should use nan literal");
 }
 
-void test_errno_with_message_formats_message() {
-    const TempDir dir("nebula-logger-errno-message");
+void test_errno_error_fields_format() {
+    const test::TempDir dir("nebula-logger-errno-message");
 
-    Logger::instance().initialize(LogLevel::Trace, dir.path(), false);
-    Logger::instance()
-        .error(nebula::common::LogDomain::Test, "accept failed")
-        .field("errno", 9, "Bad file descriptor")
+    common::Logger::instance().initialize({.level = common::LogLevel::Trace, .dir = dir.path(), .also_stderr = false});
+    common::Logger::instance()
+        .error("accept failed")
+        .field("errno", 9)
+        .field("error", "Bad file descriptor")
         .field("decision", "keep_running");
 
-    const std::string content = read_all(find_single_regular_file(dir.path()));
-    expect_contains(content, "accept failed: domain=test, errno=9 (Bad file descriptor), decision=keep_running",
-                    "errno field should render caller-provided message and structured decision");
-    expect_not_contains(content, "accept failed: domain=test, errno=9, decision=keep_running",
-                        "errno should include caller-provided error text");
+    const ParsedLogLine line = parse_log_lines(test::read_all(test::find_single_regular_file(dir.path()))).front();
+    expect_string_field(line, "event", "accept failed", "errno log event should match");
+    expect_int_field(line, "errno", 9, "errno should remain numeric");
+    expect_string_field(line, "error", "Bad file descriptor", "error field should keep errno text");
+    expect_string_field(line, "decision", "keep_running", "decision should remain structured");
 }
 
 void test_reinit_switches_output_directory() {
-    const TempDir first_dir("nebula-logger-reinit-a");
-    const TempDir second_dir("nebula-logger-reinit-b");
+    const test::TempDir first_dir("nebula-logger-reinit-a");
+    const test::TempDir second_dir("nebula-logger-reinit-b");
 
-    Logger::instance().initialize(LogLevel::Info, first_dir.path(), false);
-    Logger::instance().info(nebula::common::LogDomain::Test, "first directory message");
+    common::Logger::instance().initialize(
+        {.level = common::LogLevel::Info, .dir = first_dir.path(), .also_stderr = false});
+    common::Logger::instance().info("first directory message");
 
-    Logger::instance().initialize(LogLevel::Info, second_dir.path(), false);
-    Logger::instance().info(nebula::common::LogDomain::Test, "second directory message");
+    common::Logger::instance().initialize(
+        {.level = common::LogLevel::Info, .dir = second_dir.path(), .also_stderr = false});
+    common::Logger::instance().info("second directory message");
 
-    const std::string first_content = read_all(find_single_regular_file(first_dir.path()));
-    const std::string second_content = read_all(find_single_regular_file(second_dir.path()));
-    expect_contains(first_content, "first directory message", "first message should remain in first directory");
-    expect_not_contains(first_content, "second directory message",
-                        "second message should not leak into first directory");
-    expect_contains(second_content, "second directory message", "second message should exist in second directory");
+    const ParsedLogLine first_line =
+        parse_log_lines(test::read_all(test::find_single_regular_file(first_dir.path()))).front();
+    const ParsedLogLine second_line =
+        parse_log_lines(test::read_all(test::find_single_regular_file(second_dir.path()))).front();
+    expect_string_field(first_line, "event", "first directory message", "first message should remain in first dir");
+    expect_string_field(second_line, "event", "second directory message", "second message should remain in second dir");
 }
 
 void test_init_reports_create_directory_failure() {
-    const TempDir dir("nebula-logger-create-dir-fail");
+    const test::TempDir dir("nebula-logger-create-dir-fail");
     const std::filesystem::path blocked_path = dir.path() / "blocked-dir";
     {
         std::ofstream blocked_file(blocked_path);
-        expect_true(blocked_file.is_open(), "blocked file should be created");
+        test::expect_true(blocked_file.is_open(), "blocked file should be created");
     }
 
-    const std::string stderr_text = capture_stderr([&]() {
-        Logger::instance().initialize(LogLevel::Info, blocked_path.string(), false);
-        Logger::instance().info(nebula::common::LogDomain::Test, "directory failure should still emit business log");
-        Logger::instance().info(nebula::common::LogDomain::Test, "directory failure should keep emitting business log");
+    const std::string stderr_text = test::capture_stderr([&]() {
+        common::Logger::instance().initialize({
+            .level = common::LogLevel::Info,
+            .dir = blocked_path.generic_string(),
+            .also_stderr = false,
+        });
+        common::Logger::instance().info("directory failure should still emit business log");
+        common::Logger::instance().info("directory failure should keep emitting business log");
     });
-    expect_contains(stderr_text,
-                    "[ERROR] create log directory failed: path=", "create directory failure should be logged");
-    expect_equal(count_occurrences(stderr_text, "[ERROR] create log directory failed: path="),
-                 static_cast<std::size_t>(1), "create directory failure should only be logged once per day");
-    expect_contains(stderr_text, "errno=", "create directory failure should include errno");
-    expect_contains(stderr_text, ", fallback=stderr_only",
-                    "create directory failure should include structured fallback");
-    expect_contains(stderr_text, "] [INFO] directory failure should still emit business log",
-                    "create directory failure should fallback to stderr business log");
-    expect_contains(stderr_text, "] [INFO] directory failure should keep emitting business log",
-                    "fallback mode should keep printing later business logs");
+
+    const std::vector<ParsedLogLine> lines = parse_log_lines(stderr_text);
+    test::expect_equal(lines.size(), std::size_t{3}, "directory failure path should emit one error and two info lines");
+    test::expect_equal(lines[0].level, std::string("ERROR"), "directory failure level should be error");
+    expect_string_field(lines[0], "event", "create log directory failed", "directory failure event should match");
+    expect_string_field(lines[0], "fallback", "stderr_only", "directory failure fallback should match");
+    test::expect_true(!require_field(lines[0], "errno").empty(), "directory failure errno should be present");
+    expect_string_field(lines[1], "event", "directory failure should still emit business log",
+                        "business log should continue on stderr");
+    expect_string_field(lines[2], "event", "directory failure should keep emitting business log",
+                        "fallback mode should keep later business logs");
 }
 
 void test_init_reports_open_file_failure() {
-    const TempDir dir("nebula-logger-open-fail");
+    const test::TempDir dir("nebula-logger-open-fail");
     const std::filesystem::path blocked_file_path =
         dir.path() / std::format("nebula-{}.log", logger_current_date_text());
     std::error_code ec;
     std::filesystem::create_directories(blocked_file_path, ec);
-    expect_true(!ec, "blocked path directory should be created");
+    test::expect_true(!ec, "blocked path directory should be created");
 
-    const std::string stderr_text = capture_stderr([&]() {
-        Logger::instance().initialize(LogLevel::Info, dir.path(), false);
-        Logger::instance().info(nebula::common::LogDomain::Test, "should fallback to stderr only");
-        Logger::instance().info(nebula::common::LogDomain::Test, "fallback should keep printing business logs");
+    const std::string stderr_text = test::capture_stderr([&]() {
+        common::Logger::instance().initialize(
+            {.level = common::LogLevel::Info, .dir = dir.path(), .also_stderr = false});
+        common::Logger::instance().info("should fallback to stderr only");
+        common::Logger::instance().info("fallback should keep printing business logs");
     });
-    expect_contains(stderr_text, "[ERROR] open log file failed: path=", "open file failure should be logged");
-    expect_equal(count_occurrences(stderr_text, "[ERROR] open log file failed: path="), static_cast<std::size_t>(1),
-                 "open file failure should only be logged once per day");
-    expect_contains(stderr_text, "errno=", "open file failure should include errno");
-    expect_contains(stderr_text, ", fallback=stderr_only", "open file failure should include structured fallback");
-    expect_contains(stderr_text, "] [INFO] should fallback to stderr only",
-                    "open failure should fallback to stderr business log");
-    expect_contains(stderr_text, "] [INFO] fallback should keep printing business logs",
-                    "fallback mode should keep printing later business logs");
-    expect_equal(count_regular_files(dir.path()), static_cast<std::size_t>(0),
-                 "open failure should not create regular log file");
+
+    const std::vector<ParsedLogLine> lines = parse_log_lines(stderr_text);
+    test::expect_equal(lines.size(), std::size_t{3}, "open failure path should emit one error and two info lines");
+    test::expect_equal(lines[0].level, std::string("ERROR"), "open failure level should be error");
+    expect_string_field(lines[0], "event", "open log file failed", "open failure event should match");
+    expect_string_field(lines[0], "fallback", "stderr_only", "open failure fallback should match");
+    test::expect_true(!require_field(lines[0], "errno").empty(), "open failure errno should be present");
+    expect_string_field(lines[1], "event", "should fallback to stderr only",
+                        "open failure should fallback to stderr business log");
+    expect_string_field(lines[2], "event", "fallback should keep printing business logs",
+                        "fallback mode should keep printing later business logs");
+    test::expect_equal(count_regular_files(dir.path()), std::size_t{0},
+                       "open failure should not create regular log file");
 }
 
 int run_logger_tests() {
-    const std::vector<nebula::testsupport::TestCase> tests = {
-        {"to_string covers all levels", test_to_string_covers_levels},
-        {"to_string covers all domains", test_to_string_covers_domains},
+    const std::vector<nebula::test::TestCase> tests = {
+        {"uninitialized logger writes all levels to stderr only",
+         test_uninitialized_logger_writes_all_levels_to_stderr_only},
         {"log filename uses daily pattern", test_log_filename_uses_daily_pattern},
         {"min level filtering", test_min_level_filtering},
-        {"iso8601 prefix and level spacing", test_iso8601_prefix_and_level_spacing},
+        {"bracketed iso8601 prefix and level spacing", test_bracketed_iso8601_prefix_and_level_spacing},
         {"structured fields format", test_structured_fields_format},
-        {"domain overload adds domain field", test_domain_overload_adds_domain_field},
         {"entry logs on destruction", test_entry_logs_on_destruction},
         {"entry emit does not duplicate", test_entry_emit_does_not_duplicate},
-        {"field message format", test_field_message_format},
+        {"status text field format", test_status_text_field_format},
+        {"string field uses json escape sequences", test_string_field_uses_json_escape_sequences},
         {"bool field formats true false", test_bool_field_formats_true_false},
-        {"errno with message formats message", test_errno_with_message_formats_message},
+        {"errno error fields format", test_errno_error_fields_format},
         {"reinit switches output directory", test_reinit_switches_output_directory},
         {"init reports create directory failure", test_init_reports_create_directory_failure},
         {"init reports open file failure", test_init_reports_open_file_failure},
     };
 
-    return nebula::testsupport::run_tests(tests);
+    return nebula::test::run_tests(tests);
 }
 
 }  // namespace
 
 int main() {
-    return nebula::testsupport::run_main(run_logger_tests);
+    return nebula::test::run_main(run_logger_tests);
 }

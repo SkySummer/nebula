@@ -17,6 +17,7 @@ Checks: >
   -readability-magic-numbers,
   -cppcoreguidelines-avoid-magic-numbers,
   -bugprone-easily-swappable-parameters,
+  -portability-template-virtual-member-function,
 
 WarningsAsErrors: ''
 HeaderFilterRegex: '.*'

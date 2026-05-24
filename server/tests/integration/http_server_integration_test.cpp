@@ -4,7 +4,6 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <format>
 #include <future>
 #include <memory>
@@ -23,72 +22,56 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "nebula/auth/auth_http.hpp"
-#include "nebula/auth/auth_service.hpp"
-#include "nebula/common/database_utils.hpp"
-#include "nebula/common/logger.hpp"
-#include "nebula/common/postgres_connection_pool.hpp"
-#include "nebula/http/router.hpp"
-#include "nebula/server/server_builder.hpp"
-#include "nebula_tests/test_support.hpp"
-#include "nebula_tests/test_support_integration.hpp"
+#include "nebula/common/log/logger.hpp"
+#include "nebula/http/routing/router.hpp"
+#include "nebula/server/runtime/builder.hpp"
+#include "nebula_tests/common.hpp"
+#include "nebula_tests/integration.hpp"
 
 namespace {
 
-using nebula::server::RunResult;
-using nebula::testsupport::capture_stderr;
-using nebula::testsupport::expect_contains;
-using nebula::testsupport::expect_not_contains;
-using nebula::testsupport::expect_true;
-using nebula::testsupport::write_jwt_secret_file;
-using nebula::testsupport::integration::build_runtime;
-using nebula::testsupport::integration::connect_localhost;
-using nebula::testsupport::integration::kIntegrationJwtSecret;
-using nebula::testsupport::integration::read_until_close;
-using nebula::testsupport::integration::send_all;
-using nebula::testsupport::integration::ServerThreadGuard;
-using nebula::testsupport::integration::wait_until_server_ready;
+using namespace nebula;
 
 std::shared_ptr<nebula::http::Router> build_default_router(
     std::optional<std::string> root_default_path = std::string("/healthz")) {
     auto router = std::make_shared<nebula::http::Router>();
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/healthz",
-                                  [](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "application/json");
-                                      response.body = R"({"status":"ok"})";
-                                      return response;
-                                  }),
-                "add default healthz route should succeed");
-    expect_true(router->add_route(nebula::http::HttpMethod::Post, "/echo",
-                                  [](const nebula::http::RouteContext& context) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "application/json");
-                                      response.body = context.request.body;
-                                      return response;
-                                  }),
-                "add default echo route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/healthz",
+                                        [](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "application/json");
+                                            response.body = R"({"status":"ok"})";
+                                            return response;
+                                        }),
+                      "add default healthz route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Post, "/echo",
+                                        [](const nebula::http::RouteContext& context) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "application/json");
+                                            response.body = context.request.body;
+                                            return response;
+                                        }),
+                      "add default echo route should succeed");
 
     if (!root_default_path.has_value()) {
         return router;
     }
 
-    expect_true(*root_default_path != "/", "root mapping to self should be rejected in test setup");
-    expect_true(router->has_route_match(nebula::http::HttpMethod::Get, *root_default_path),
-                "root mapping target should be registered in test setup");
+    test::expect_true(*root_default_path != "/", "root mapping to self should be rejected in test setup");
+    test::expect_true(router->has_route_match(nebula::http::HttpMethod::Get, *root_default_path),
+                      "root mapping target should be registered in test setup");
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/", *root_default_path),
-                "add mapped root route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/", *root_default_path),
+                      "add mapped root route should succeed");
 
     return router;
 }
 
-bool is_nonfatal_run_result(const RunResult result) {
-    return result == RunResult::StartCanceled || result == RunResult::GracefulCompleted ||
-           result == RunResult::ForcedByTimeout;
+bool is_nonfatal_run_result(const server::RunResult result) {
+    return result == server::RunResult::StartCanceled || result == server::RunResult::GracefulCompleted ||
+           result == server::RunResult::ForcedByTimeout;
 }
 
 void close_with_reset(int fd) {
@@ -184,23 +167,6 @@ int poll_socket_events(int fd, std::chrono::milliseconds timeout) {
     }
 }
 
-std::size_t count_occurrences(std::string_view text, std::string_view needle) {
-    if (needle.empty()) {
-        return 0;
-    }
-
-    std::size_t count = 0;
-    std::size_t pos = 0;
-    while (true) {
-        pos = text.find(needle, pos);
-        if (pos == std::string_view::npos) {
-            return count;
-        }
-        ++count;
-        pos += needle.size();
-    }
-}
-
 std::string encode_chunked_single_byte_chunks(std::string_view body) {
     std::string chunked;
     chunked.reserve((body.size() * 6U) + 5U);
@@ -280,55 +246,55 @@ private:
 };
 
 void test_healthz_endpoint() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "healthz should return 200");
-    expect_contains(response, R"({"status":"ok"})", "healthz should return expected json body");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "healthz should return 200");
+    test::expect_contains(response, R"({"status":"ok"})", "healthz should return expected json body");
 }
 
 void test_signal_mask_restored_after_http_server_destroyed() {
     SignalMaskGuard signal_mask_guard;
-    expect_true(signal_mask_guard.valid(), "capture initial signal mask should succeed");
+    test::expect_true(signal_mask_guard.valid(), "capture initial signal mask should succeed");
 
     const sigset_t before_mask = signal_mask_guard.saved_mask();
 
     {
-        nebula::app::ServerConfig config;
-        config.port = 0;
-        config.worker_thread_count = 1;
-        auto server = build_runtime(config, build_default_router());
+        nebula::app::AppConfig config;
+        config.server.port = 0;
+        config.server.worker_thread_count = 1;
+        auto server = test::integration::build_runtime(config, build_default_router());
     }
 
     sigset_t after_mask{};
     const int read_mask_result = ::pthread_sigmask(SIG_SETMASK, nullptr, &after_mask);
-    expect_true(read_mask_result == 0, "capture signal mask after server destroy should succeed");
+    test::expect_true(read_mask_result == 0, "capture signal mask after server destroy should succeed");
 
     const int before_sigint = ::sigismember(&before_mask, SIGINT);
     const int after_sigint = ::sigismember(&after_mask, SIGINT);
     const int before_sigterm = ::sigismember(&before_mask, SIGTERM);
     const int after_sigterm = ::sigismember(&after_mask, SIGTERM);
 
-    expect_true(before_sigint >= 0 && after_sigint >= 0, "sigismember for SIGINT should succeed");
-    expect_true(before_sigterm >= 0 && after_sigterm >= 0, "sigismember for SIGTERM should succeed");
-    expect_true(before_sigint == after_sigint, "SIGINT mask state should be restored after server destruction");
-    expect_true(before_sigterm == after_sigterm, "SIGTERM mask state should be restored after server destruction");
+    test::expect_true(before_sigint >= 0 && after_sigint >= 0, "sigismember for SIGINT should succeed");
+    test::expect_true(before_sigterm >= 0 && after_sigterm >= 0, "sigismember for SIGTERM should succeed");
+    test::expect_true(before_sigint == after_sigint, "SIGINT mask state should be restored after server destruction");
+    test::expect_true(before_sigterm == after_sigterm,
+                      "SIGTERM mask state should be restored after server destruction");
 }
 
 void test_signal_shutdown_remains_available_after_restart() {
@@ -336,35 +302,36 @@ void test_signal_shutdown_remains_available_after_restart() {
 
     SignalActionGuard sigint_guard(SIGINT);
     SignalActionGuard sigterm_guard(SIGTERM);
-    expect_true(sigint_guard.installed(), "install SIGINT temporary handler should succeed");
-    expect_true(sigterm_guard.installed(), "install SIGTERM temporary handler should succeed");
+    test::expect_true(sigint_guard.installed(), "install SIGINT temporary handler should succeed");
+    test::expect_true(sigterm_guard.installed(), "install SIGTERM temporary handler should succeed");
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
     const auto run_cycle_and_stop_with_sigterm = [&server](std::string_view cycle_name) {
-        std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
+        std::future<server::RunResult> start_future =
+            std::async(std::launch::async, [&server]() { return server.run(); });
 
-        wait_until_server_ready(server);
+        test::integration::wait_until_server_ready(server);
 
         const int raise_result = ::kill(::getpid(), SIGTERM);
-        expect_true(raise_result == 0, "send SIGTERM should succeed");
+        test::expect_true(raise_result == 0, "send SIGTERM should succeed");
 
         const bool stopped_by_signal = (start_future.wait_for(2s) == std::future_status::ready);
         if (!stopped_by_signal) {
             server.request_stop();
         }
 
-        expect_true(stopped_by_signal, std::format("{} cycle should stop after SIGTERM", cycle_name));
-        expect_true(start_future.wait_for(2s) == std::future_status::ready,
-                    std::format("{} cycle should return after stop", cycle_name));
+        test::expect_true(stopped_by_signal, std::format("{} cycle should stop after SIGTERM", cycle_name));
+        test::expect_true(start_future.wait_for(2s) == std::future_status::ready,
+                          std::format("{} cycle should return after stop", cycle_name));
 
-        const RunResult result = start_future.get();
-        expect_true(is_nonfatal_run_result(result),
-                    std::format("{} cycle should exit without fatal error", cycle_name));
-        expect_true(!server.is_running(), std::format("{} cycle should leave server stopped", cycle_name));
+        const server::RunResult result = start_future.get();
+        test::expect_true(is_nonfatal_run_result(result),
+                          std::format("{} cycle should exit without fatal error", cycle_name));
+        test::expect_true(!server.is_running(), std::format("{} cycle should leave server stopped", cycle_name));
     };
 
     run_cycle_and_stop_with_sigterm("first");
@@ -376,10 +343,10 @@ void test_signal_shutdown_with_preexisting_unmasked_thread() {
 
     SignalActionGuard sigint_guard(SIGINT);
     SignalActionGuard sigterm_guard(SIGTERM);
-    expect_true(sigint_guard.installed(), "install SIGINT temporary handler should succeed");
-    expect_true(sigterm_guard.installed(), "install SIGTERM temporary handler should succeed");
+    test::expect_true(sigint_guard.installed(), "install SIGINT temporary handler should succeed");
+    test::expect_true(sigterm_guard.installed(), "install SIGTERM temporary handler should succeed");
 
-    std::atomic<bool> helper_ready = false;
+    std::atomic_bool helper_ready = false;
     std::jthread helper_thread([&helper_ready](const std::stop_token& stop_token) {
         helper_ready.store(true);
         while (!stop_token.stop_requested()) {
@@ -390,486 +357,517 @@ void test_signal_shutdown_with_preexisting_unmasked_thread() {
     for (int idx = 0; idx < 50 && !helper_ready.load(); ++idx) {
         std::this_thread::sleep_for(10ms);
     }
-    expect_true(helper_ready.load(), "preexisting helper thread should start");
+    test::expect_true(helper_ready.load(), "preexisting helper thread should start");
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
-    wait_until_server_ready(server);
+    std::future<server::RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
+    test::integration::wait_until_server_ready(server);
 
     const int raise_result = ::kill(::getpid(), SIGTERM);
-    expect_true(raise_result == 0, "send SIGTERM should succeed");
+    test::expect_true(raise_result == 0, "send SIGTERM should succeed");
 
     const bool stopped_by_signal = (start_future.wait_for(2s) == std::future_status::ready);
     if (!stopped_by_signal) {
         server.request_stop();
     }
 
-    expect_true(stopped_by_signal, "server should stop after SIGTERM with preexisting unmasked thread");
-    expect_true(start_future.wait_for(2s) == std::future_status::ready,
-                "server start should return after SIGTERM stop");
+    test::expect_true(stopped_by_signal, "server should stop after SIGTERM with preexisting unmasked thread");
+    test::expect_true(start_future.wait_for(2s) == std::future_status::ready,
+                      "server start should return after SIGTERM stop");
 
-    const RunResult result = start_future.get();
-    expect_true(is_nonfatal_run_result(result), "server should exit without fatal error after SIGTERM");
-    expect_true(!server.is_running(), "server should leave stopped state after SIGTERM");
+    const server::RunResult result = start_future.get();
+    test::expect_true(is_nonfatal_run_result(result), "server should exit without fatal error after SIGTERM");
+    test::expect_true(!server.is_running(), "server should leave stopped state after SIGTERM");
 
     helper_thread.request_stop();
 }
 
 void test_healthz_endpoint_absolute_form() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET http://localhost/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "absolute-form healthz should return 200");
-    expect_contains(response, R"({"status":"ok"})", "absolute-form healthz should return expected json body");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "absolute-form healthz should return 200");
+    test::expect_contains(response, R"({"status":"ok"})", "absolute-form healthz should return expected json body");
 }
 
 void test_healthz_endpoint_with_query() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthz?ready=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "healthz with query should return 200");
-    expect_contains(response, R"({"status":"ok"})", "healthz with query should return expected json body");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "healthz with query should return 200");
+    test::expect_contains(response, R"({"status":"ok"})", "healthz with query should return expected json body");
 }
 
 void test_root_endpoint_mapped_to_healthz_by_default() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "default root mapping should return 200");
-    expect_contains(response, R"({"status":"ok"})", "default root mapping should return healthz body");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "default root mapping should return 200");
+    test::expect_contains(response, R"({"status":"ok"})", "default root mapping should return healthz body");
 }
 
 void test_root_endpoint_not_found_when_root_mapping_disabled() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router(std::nullopt));
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router(std::nullopt));
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 404 Not Found", "root should return 404 when mapping is disabled");
-    expect_contains(response, R"("code":"not_found")", "root disabled response should use api not_found code");
+    test::expect_contains(response, "HTTP/1.1 404 Not Found", "root should return 404 when mapping is disabled");
+    test::expect_contains(response, R"("code":"not_found")", "root disabled response should use api not_found code");
 }
 
 void test_head_method_suppresses_body() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
     const std::string route_body = "head-body-should-not-appear";
-    expect_true(router->add_route(nebula::http::HttpMethod::Head, "/headz",
-                                  [route_body](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = route_body;
-                                      return response;
-                                  }),
-                "add head route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Head, "/headz",
+                                        [route_body](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = route_body;
+                                            return response;
+                                        }),
+                      "add head route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "HEAD /headz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
-    const std::string response = read_until_close(fd);
+    const std::string response = test::integration::read_until_close(fd);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "head route should return 200");
-    expect_not_contains(response, route_body, "head response must not include body bytes");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "head route should return 200");
+    test::expect_not_contains(response, route_body, "head response must not include body bytes");
 
     const std::size_t header_end = response.find("\r\n\r\n");
-    expect_true(header_end != std::string::npos, "head response should contain header terminator");
+    test::expect_true(header_end != std::string::npos, "head response should contain header terminator");
 
     const std::size_t content_length = parse_content_length(response.substr(0, header_end + 2U));
-    expect_true(content_length == route_body.size(), "head response should keep content-length of handler body");
+    test::expect_true(content_length == route_body.size(), "head response should keep content-length of handler body");
 
     const std::size_t actual_body_len = response.size() - (header_end + 4U);
-    expect_true(actual_body_len == 0U, "head response should have empty payload");
+    test::expect_true(actual_body_len == 0U, "head response should have empty payload");
 }
 
 void test_echo_endpoint() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string body = R"({"message":"hi"})";
     const std::string request = std::format(
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n"
         "Content-Type: application/json\r\nConnection: close\r\n\r\n{}",
         body.size(), body);
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "echo should return 200");
-    expect_contains(response, body, "echo should return original body");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "echo should return 200");
+    test::expect_contains(response, body, "echo should return original body");
 }
 
-void test_auth_route_registration_fails_when_database_unreachable() {
-    const nebula::testsupport::TempDir secret_dir("nebula-http-auth-register-route-fail-secret");
-    const std::filesystem::path secret_path = secret_dir.path() / "jwt.key";
-    write_jwt_secret_file(secret_path, kIntegrationJwtSecret);
-
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.auth_jwt_secret_path = secret_path;
-    config.database_host = "127.0.0.1";
-    config.database_port = 1;
-    config.database_name = "invalid_db";
-    config.database_user = "invalid_user";
-    ::setenv("NEBULA_TEST_INVALID_DATABASE_PASSWORD", "invalid_password", 1);
-    config.database_password_env = "NEBULA_TEST_INVALID_DATABASE_PASSWORD";
-    config.database_connect_timeout_ms = 500;
-
-    auto router = build_default_router();
-    const std::shared_ptr<nebula::auth::AuthService> auth_service = nebula::auth::initialize_auth_service(config);
-    expect_true(auth_service != nullptr, "initialize auth service should succeed without database initialization");
-    const std::optional<std::string> password = nebula::common::resolve_database_password(config.database_password_env);
-    expect_true(password.has_value(), "database password should be available");
-    if (password.has_value()) {
-        const nebula::common::PostgresConnectionPool::InitializeStatus pool_status =
-            nebula::common::PostgresConnectionPool::instance().initialize(nebula::common::PostgresConnectionPoolOptions{
-                .host = config.database_host,
-                .port = config.database_port,
-                .database = config.database_name,
-                .user = config.database_user,
-                .password = *password,
-                .max_connections = config.database_max_connections,
-                .connect_timeout_ms = config.database_connect_timeout_ms,
-                .acquire_timeout_ms = config.database_acquire_timeout_ms,
-            });
-        expect_true(pool_status != nebula::common::PostgresConnectionPool::InitializeStatus::Initialized &&
-                        pool_status != nebula::common::PostgresConnectionPool::InitializeStatus::AlreadyInitialized,
-                    "database pool initialization should fail when database is unreachable");
-    }
-    expect_true(!nebula::auth::register_auth_routes(auth_service, router),
-                "register auth routes should fail when database pool is unavailable");
-    ::unsetenv("NEBULA_TEST_INVALID_DATABASE_PASSWORD");
-}
-
-void test_request_completed_log_uses_raw_request_line() {
-    const nebula::testsupport::TempDir log_dir("nebula-http-server-request-log");
+void test_request_completed_log_uses_raw_request_line_for_non_sensitive_route() {
     const std::string request = "GET http://localhost/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
 
-    const std::string stderr_text = capture_stderr([&]() {
-        nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Info, log_dir.path(), true);
+    const std::string stderr_text = test::capture_stderr([&]() {
+        nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Info);
 
-        nebula::app::ServerConfig config;
-        config.port = 0;
-        config.worker_thread_count = 2;
-        auto server = build_runtime(config, build_default_router());
+        nebula::app::AppConfig config;
+        config.server.port = 0;
+        config.server.worker_thread_count = 2;
+        auto server = test::integration::build_runtime(config, build_default_router());
 
-        std::thread server_thread([&server]() { server.run(); });
-        ServerThreadGuard server_guard(server, server_thread);
-        wait_until_server_ready(server);
+        test::integration::ServerRunGuard server_guard(server);
+        test::integration::wait_until_server_ready(server);
 
-        const int fd = connect_localhost(server.listening_port());
-        expect_true(fd >= 0, "connect should succeed");
-        expect_true(send_all(fd, request), "send request should succeed");
+        const int fd = test::integration::connect_localhost(server.listening_port());
+        test::expect_true(fd >= 0, "connect should succeed");
+        test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
         std::string carry;
         const std::string response = read_one_response(fd, carry);
         ::close(fd);
-        expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
+        test::expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
     });
 
-    nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Warning, log_dir.path(), false);
+    nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Warning);
 
-    expect_contains(stderr_text,
-                    "[INFO] request completed: domain=server, fd=", "request completed log should be emitted");
-    expect_contains(stderr_text, "request=\"GET http://localhost/healthz HTTP/1.1\"",
-                    "request field should use raw request line");
-    expect_contains(stderr_text, std::format("request_bytes={}", request.size()),
-                    "request bytes should match raw request size");
-    expect_contains(stderr_text, "status=200 (OK)", "status field should include status text");
-    expect_contains(stderr_text, "response_bytes=", "response bytes field should be logged");
-    expect_contains(stderr_text, "latency_ms=", "latency field should be logged");
+    test::expect_contains(stderr_text, "request completed: fd=", "request completed log should be emitted");
+    test::expect_contains(stderr_text, "GET http://localhost/healthz HTTP/1.1",
+                          "request field should use raw request line");
+    test::expect_contains(stderr_text, std::format("request_bytes={}", request.size()),
+                          "request bytes should match raw request size");
+    test::expect_contains(stderr_text, "status=200", "status code should remain numeric");
+    test::expect_contains(stderr_text, "status_text=\"OK\"", "status text should be logged");
+    test::expect_contains(stderr_text, "response_bytes=", "response bytes field should be logged");
+    test::expect_contains(stderr_text, "latency_ms=", "latency field should be logged");
+}
+
+void test_request_completed_log_redacts_download_ticket() {
+    constexpr std::string_view k_download_ticket = "0123456789abcdef0123456789abcdef";
+    const std::string request = std::format(
+        "GET /api/storage/downloads/{} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", k_download_ticket);
+
+    const std::string stderr_text = test::capture_stderr([&]() {
+        nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Info);
+
+        auto router = build_default_router();
+        test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/api/storage/downloads/{download_ticket}",
+                                            [](const nebula::http::RouteContext&) {
+                                                nebula::http::HttpResponse response;
+                                                response.status = nebula::http::HttpStatus::OK;
+                                                response.headers.emplace("Content-Type", "application/octet-stream");
+                                                response.body = "ok";
+                                                return response;
+                                            }),
+                          "add download ticket route should succeed");
+
+        nebula::app::AppConfig config;
+        config.server.port = 0;
+        config.server.worker_thread_count = 2;
+        auto server = test::integration::build_runtime(config, std::move(router));
+
+        test::integration::ServerRunGuard server_guard(server);
+        test::integration::wait_until_server_ready(server);
+
+        const int fd = test::integration::connect_localhost(server.listening_port());
+        test::expect_true(fd >= 0, "connect should succeed");
+        test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
+
+        std::string carry;
+        const std::string response = read_one_response(fd, carry);
+        ::close(fd);
+        test::expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
+    });
+
+    nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Warning);
+
+    test::expect_contains(stderr_text, "request completed: fd=", "request completed log should be emitted");
+    test::expect_contains(stderr_text, "GET /api/storage/downloads/{download_ticket} HTTP/1.1",
+                          "request field should redact download ticket");
+    test::expect_not_contains(stderr_text, std::string(k_download_ticket),
+                              "request completed log should not contain raw download ticket");
 }
 
 void test_connections_dispatched_to_multiple_sub_reactors() {
-    const nebula::testsupport::TempDir log_dir("nebula-http-server-sub-reactor-dispatch");
+    const std::string stderr_text = test::capture_stderr([&]() {
+        nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Debug);
 
-    const std::string stderr_text = capture_stderr([&]() {
-        nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Debug, log_dir.path(), true);
+        nebula::app::AppConfig config;
+        config.server.port = 0;
+        config.server.sub_reactor_count = 2;
+        config.server.worker_thread_count = 2;
+        auto server = test::integration::build_runtime(config, build_default_router());
 
-        nebula::app::ServerConfig config;
-        config.port = 0;
-        config.sub_reactor_count = 2;
-        config.worker_thread_count = 2;
-        auto server = build_runtime(config, build_default_router());
-
-        std::thread server_thread([&server]() { server.run(); });
-        ServerThreadGuard server_guard(server, server_thread);
-        wait_until_server_ready(server);
+        test::integration::ServerRunGuard server_guard(server);
+        test::integration::wait_until_server_ready(server);
 
         for (int idx = 0; idx < 4; ++idx) {
-            const int fd = connect_localhost(server.listening_port());
-            expect_true(fd >= 0, "connect should succeed");
+            const int fd = test::integration::connect_localhost(server.listening_port());
+            test::expect_true(fd >= 0, "connect should succeed");
 
             const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-            expect_true(send_all(fd, request), "send request should succeed");
+            test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
             std::string carry;
             const std::string response = read_one_response(fd, carry);
             ::close(fd);
-            expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
+            test::expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
         }
     });
 
-    nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Warning, log_dir.path(), false);
+    nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Warning);
 
-    expect_contains(stderr_text,
-                    "connection accepted: domain=server, fd=", "connection accepted log should be emitted");
-    expect_contains(stderr_text, "reactor_id=0", "dispatch should include reactor_id 0");
-    expect_contains(stderr_text, "reactor_id=1", "dispatch should include reactor_id 1");
+    test::expect_contains(stderr_text,
+                          "sub reactor connection accepted: fd=", "connection accepted log should be emitted");
+    test::expect_contains(stderr_text, "reactor_id=0", "dispatch should include reactor_id 0");
+    test::expect_contains(stderr_text, "reactor_id=1", "dispatch should include reactor_id 1");
+}
+
+void test_sub_reactor_count_above_hardware_logs_warning() {
+    const std::size_t hardware_count = std::thread::hardware_concurrency();
+    if (hardware_count == 0U) {
+        return;
+    }
+
+    const std::size_t configured_sub_reactor_count = hardware_count + 1U;
+    test::expect_true(configured_sub_reactor_count > hardware_count,
+                      "configured sub reactor count should exceed hardware count");
+
+    const std::string stderr_text = test::capture_stderr([&]() {
+        nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Warning);
+
+        nebula::app::AppConfig config;
+        config.server.port = 0;
+        config.server.sub_reactor_count = configured_sub_reactor_count;
+        config.server.worker_thread_count = 2;
+        auto server = test::integration::build_runtime(config, build_default_router());
+
+        test::integration::ServerRunGuard server_guard(server);
+        test::integration::wait_until_server_ready(server);
+
+        const int fd = test::integration::connect_localhost(server.listening_port());
+        test::expect_true(fd >= 0, "connect should succeed");
+
+        const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
+
+        std::string carry;
+        const std::string response = read_one_response(fd, carry);
+        ::close(fd);
+        test::expect_contains(response, "HTTP/1.1 200 OK", "request should be served");
+    });
+
+    nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Warning);
+
+    test::expect_contains(stderr_text, "sub reactor count exceeds hardware concurrency",
+                          "over-hardware sub reactor count should be logged");
+    test::expect_contains(stderr_text, std::format("count={}", configured_sub_reactor_count),
+                          "warning log should include configured sub reactor count");
+    test::expect_contains(stderr_text, std::format("hardware_count={}", hardware_count),
+                          "warning log should include hardware thread count");
 }
 
 void test_sub_reactor_count_zero_uses_default_value_in_constructor() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.sub_reactor_count = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.sub_reactor_count = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "sub_reactor_count zero should still serve requests");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "sub_reactor_count zero should still serve requests");
 }
 
 void test_keep_alive_two_requests() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request1 = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
-    expect_true(send_all(fd, request1), "first request should send");
+    test::expect_true(test::integration::send_all(fd, request1), "first request should send");
 
     std::string carry;
     const std::string response1 = read_one_response(fd, carry);
-    expect_contains(response1, "HTTP/1.1 200 OK", "first keep-alive response should be 200");
+    test::expect_contains(response1, "HTTP/1.1 200 OK", "first keep-alive response should be 200");
 
     const std::string body = R"({"second":true})";
     const std::string request2 =
         std::format("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.size(), body);
-    expect_true(send_all(fd, request2), "second request should send");
+    test::expect_true(test::integration::send_all(fd, request2), "second request should send");
 
     const std::string response2 = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response2, "HTTP/1.1 200 OK", "second keep-alive response should be 200");
-    expect_contains(response2, body, "second keep-alive response should echo body");
+    test::expect_contains(response2, "HTTP/1.1 200 OK", "second keep-alive response should be 200");
+    test::expect_contains(response2, body, "second keep-alive response should echo body");
 }
 
 void test_client_reset_during_response_keeps_server_running() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-reset",
-                                  [](const nebula::http::RouteContext&) {
-                                      std::this_thread::sleep_for(150ms);
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "slow-reset";
-                                      return response;
-                                  }),
-                "add slow-reset route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-reset",
+                                        [](const nebula::http::RouteContext&) {
+                                            std::this_thread::sleep_for(150ms);
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "slow-reset";
+                                            return response;
+                                        }),
+                      "add slow-reset route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int reset_fd = connect_localhost(server.listening_port());
-    expect_true(reset_fd >= 0, "connect for reset scenario should succeed");
+    const int reset_fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(reset_fd >= 0, "connect for reset scenario should succeed");
 
     const std::string slow_request = "GET /slow-reset HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(reset_fd, slow_request), "slow-reset request should send");
+    test::expect_true(test::integration::send_all(reset_fd, slow_request), "slow-reset request should send");
     close_with_reset(reset_fd);
 
     std::this_thread::sleep_for(250ms);
-    expect_true(server.is_running(), "server should keep running after peer reset");
+    test::expect_true(server.is_running(), "server should keep running after peer reset");
 
-    const int probe_fd = connect_localhost(server.listening_port());
-    expect_true(probe_fd >= 0, "probe connect should succeed");
+    const int probe_fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(probe_fd >= 0, "probe connect should succeed");
 
     const std::string probe_request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(probe_fd, probe_request), "probe request should send");
+    test::expect_true(test::integration::send_all(probe_fd, probe_request), "probe request should send");
     std::string carry;
     const std::string probe_response = read_one_response(probe_fd, carry);
     ::close(probe_fd);
 
-    expect_contains(probe_response, "HTTP/1.1 200 OK", "server should keep serving after peer reset");
+    test::expect_contains(probe_response, "HTTP/1.1 200 OK", "server should keep serving after peer reset");
 }
 
 void test_stale_async_response_not_delivered_to_new_connection() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-fd-reuse",
-                                  [](const nebula::http::RouteContext&) {
-                                      std::this_thread::sleep_for(250ms);
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "slow-fd-reuse";
-                                      return response;
-                                  }),
-                "add slow-fd-reuse route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-fd-reuse",
+                                        [](const nebula::http::RouteContext&) {
+                                            std::this_thread::sleep_for(250ms);
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "slow-fd-reuse";
+                                            return response;
+                                        }),
+                      "add slow-fd-reuse route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int stale_fd = connect_localhost(server.listening_port());
-    expect_true(stale_fd >= 0, "connect stale client should succeed");
+    const int stale_fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(stale_fd >= 0, "connect stale client should succeed");
 
     const std::string stale_request = "GET /slow-fd-reuse HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(stale_fd, stale_request), "slow-fd-reuse request should send");
+    test::expect_true(test::integration::send_all(stale_fd, stale_request), "slow-fd-reuse request should send");
     close_with_reset(stale_fd);
 
     std::this_thread::sleep_for(30ms);
 
-    const int fresh_fd = connect_localhost(server.listening_port());
-    expect_true(fresh_fd >= 0, "connect fresh client should succeed");
+    const int fresh_fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fresh_fd >= 0, "connect fresh client should succeed");
 
     const int unexpected_events = poll_socket_events(fresh_fd, 450ms);
-    expect_true(unexpected_events == 0,
-                "fresh idle client should not receive stale response or be closed before sending request");
+    test::expect_true(unexpected_events == 0,
+                      "fresh idle client should not receive stale response or be closed before sending request");
 
     const std::string fresh_request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fresh_fd, fresh_request), "fresh request should send");
+    test::expect_true(test::integration::send_all(fresh_fd, fresh_request), "fresh request should send");
 
     std::string carry;
     const std::string fresh_response = read_one_response(fresh_fd, carry);
     ::close(fresh_fd);
 
-    expect_contains(fresh_response, "HTTP/1.1 200 OK", "fresh client should get 200 from healthz");
-    expect_contains(fresh_response, R"({"status":"ok"})", "fresh client should get healthz body");
+    test::expect_contains(fresh_response, "HTTP/1.1 200 OK", "fresh client should get 200 from healthz");
+    test::expect_contains(fresh_response, R"({"status":"ok"})", "fresh client should get healthz body");
 }
 
 void test_concurrent_requests() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 4;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 4;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
     constexpr int concurrency = 16;
     std::vector<std::future<bool>> futures;
@@ -877,13 +875,13 @@ void test_concurrent_requests() {
 
     for (int idx = 0; idx < concurrency; ++idx) {
         futures.push_back(std::async(std::launch::async, [&server]() {
-            const int fd = connect_localhost(server.listening_port());
+            const int fd = test::integration::connect_localhost(server.listening_port());
             if (fd < 0) {
                 return false;
             }
 
             const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-            if (!send_all(fd, request)) {
+            if (!test::integration::send_all(fd, request)) {
                 ::close(fd);
                 return false;
             }
@@ -896,17 +894,17 @@ void test_concurrent_requests() {
     }
 
     for (auto& future : futures) {
-        expect_true(future.get(), "concurrent request should succeed");
+        test::expect_true(future.get(), "concurrent request should succeed");
     }
 }
 
 void test_concurrent_start_allows_only_one_success() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
     std::promise<void> launch;
     const std::shared_future<void> go = launch.get_future().share();
@@ -916,8 +914,8 @@ void test_concurrent_start_allows_only_one_success() {
         return server.run();
     };
 
-    std::future<RunResult> first = std::async(std::launch::async, start_once);
-    std::future<RunResult> second = std::async(std::launch::async, start_once);
+    std::future<server::RunResult> first = std::async(std::launch::async, start_once);
+    std::future<server::RunResult> second = std::async(std::launch::async, start_once);
     launch.set_value();
 
     for (int idx = 0; idx < 200; ++idx) {
@@ -933,58 +931,61 @@ void test_concurrent_start_allows_only_one_success() {
     }
 
     server.request_stop();
-    const RunResult first_result = first.get();
-    const RunResult second_result = second.get();
+    const server::RunResult first_result = first.get();
+    const server::RunResult second_result = second.get();
 
-    const int rejected_count = static_cast<int>(first_result == RunResult::StartRejected) +
-                               static_cast<int>(second_result == RunResult::StartRejected);
-    expect_true(rejected_count == 1, "concurrent start should reject exactly one start attempt");
-    expect_true(is_nonfatal_run_result(first_result) || is_nonfatal_run_result(second_result),
-                "accepted concurrent start should exit without fatal error");
-    expect_true(!server.is_running(), "server should stop after stop request");
+    const int rejected_count = static_cast<int>(first_result == server::RunResult::StartRejected) +
+                               static_cast<int>(second_result == server::RunResult::StartRejected);
+    test::expect_true(rejected_count == 1, "concurrent start should reject exactly one start attempt");
+    test::expect_true(is_nonfatal_run_result(first_result) || is_nonfatal_run_result(second_result),
+                      "accepted concurrent start should exit without fatal error");
+    test::expect_true(!server.is_running(), "server should stop after stop request");
 }
 
 void test_start_rejected_while_running_does_not_break_response_submission() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    std::future<RunResult> rejected_start = std::async(std::launch::async, [&server]() { return server.run(); });
-    expect_true(rejected_start.wait_for(1s) == std::future_status::ready,
-                "concurrent start while running should return quickly");
-    expect_true(rejected_start.get() == RunResult::StartRejected, "concurrent start while running should be rejected");
+    std::future<server::RunResult> rejected_start =
+        std::async(std::launch::async, [&server]() { return server.run(); });
+    test::expect_true(rejected_start.wait_for(1s) == std::future_status::ready,
+                      "concurrent start while running should return quickly");
+    test::expect_true(rejected_start.get() == server::RunResult::StartRejected,
+                      "concurrent start while running should be rejected");
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect after rejected concurrent start should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect after rejected concurrent start should succeed");
 
     const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request after rejected concurrent start should succeed");
+    test::expect_true(test::integration::send_all(fd, request),
+                      "send request after rejected concurrent start should succeed");
     const int events = poll_socket_events(fd, 1s);
-    expect_true((events & POLLIN) != 0, "server should still produce a response after rejected concurrent start");
+    test::expect_true((events & POLLIN) != 0, "server should still produce a response after rejected concurrent start");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "server should still serve healthz after rejected concurrent start");
+    test::expect_contains(response, "HTTP/1.1 200 OK",
+                          "server should still serve healthz after rejected concurrent start");
 }
 
 void test_early_stop_during_start_leaves_server_reusable() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
+    std::future<server::RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
 
     bool start_finished = false;
     for (int idx = 0; idx < 300; ++idx) {
@@ -994,190 +995,182 @@ void test_early_stop_during_start_leaves_server_reusable() {
             break;
         }
     }
-    expect_true(start_finished, "early stop should make start return in bounded time");
+    test::expect_true(start_finished, "early stop should make start return in bounded time");
 
-    const RunResult result = start_future.get();
-    expect_true(is_nonfatal_run_result(result), "start should exit gracefully after early stop");
-    expect_true(!server.is_running(), "server should not be running after early stop");
-    expect_true(server.listening_port() == 0, "listening port should be cleared after early stop");
+    const server::RunResult result = start_future.get();
+    test::expect_true(is_nonfatal_run_result(result), "start should exit gracefully after early stop");
+    test::expect_true(!server.is_running(), "server should not be running after early stop");
+    test::expect_true(server.listening_port() == 0, "listening port should be cleared after early stop");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed after restart");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed after restart");
 
     const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request after restart should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request after restart should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "server should serve healthz after restart");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "server should serve healthz after restart");
 }
 
 void test_single_prestart_stop_cancels_start_once_and_server_remains_reusable() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
     server.request_stop();
-    std::future<RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
-    expect_true(start_future.wait_for(1s) == std::future_status::ready,
-                "prestart stop should make start return quickly");
-    const RunResult result = start_future.get();
-    expect_true(result == RunResult::StartCanceled, "prestart stop should cancel start");
-    expect_true(!server.is_running(), "server should stay stopped after prestart stop");
-    expect_true(server.listening_port() == 0, "listening port should stay zero after prestart stop");
+    std::future<server::RunResult> start_future = std::async(std::launch::async, [&server]() { return server.run(); });
+    test::expect_true(start_future.wait_for(1s) == std::future_status::ready,
+                      "prestart stop should make start return quickly");
+    const server::RunResult result = start_future.get();
+    test::expect_true(result == server::RunResult::StartCanceled, "prestart stop should cancel start");
+    test::expect_true(!server.is_running(), "server should stay stopped after prestart stop");
+    test::expect_true(server.listening_port() == 0, "listening port should stay zero after prestart stop");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed after canceled start");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed after canceled start");
     const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request after canceled start should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request after canceled start should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "server should be reusable after prestart stop cancellation");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "server should be reusable after prestart stop cancellation");
 }
 
 void test_builder_server_supports_prestart_cancel() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.manage_signals = false;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.server.manage_signals = false;
+    auto server = test::integration::build_runtime(config, build_default_router());
     server.request_stop();
 
-    std::future<RunResult> run_future = std::async(std::launch::async, [&server]() { return server.run(); });
-    expect_true(run_future.wait_for(1s) == std::future_status::ready,
-                "builder server should return quickly after prestart stop");
-    const RunResult result = run_future.get();
-    expect_true(result == RunResult::StartCanceled, "prestart stop should cancel builder server start");
-    expect_true(!server.is_running(), "builder server should not keep running after prestart stop");
-    expect_true(server.listening_port() == 0, "builder server listening port should remain zero");
+    std::future<server::RunResult> run_future = std::async(std::launch::async, [&server]() { return server.run(); });
+    test::expect_true(run_future.wait_for(1s) == std::future_status::ready,
+                      "builder server should return quickly after prestart stop");
+    const server::RunResult result = run_future.get();
+    test::expect_true(result == server::RunResult::StartCanceled, "prestart stop should cancel builder server start");
+    test::expect_true(!server.is_running(), "builder server should not keep running after prestart stop");
+    test::expect_true(server.listening_port() == 0, "builder server listening port should remain zero");
 }
 
 void test_builder_build_without_router_throws() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.manage_signals = false;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.server.manage_signals = false;
 
     bool thrown = false;
     try {
         [[maybe_unused]] auto server = nebula::server::ServerBuilder().with_config(config).build();
     } catch (const std::invalid_argument& e) {
         thrown = true;
-        expect_contains(e.what(), "router_missing", "missing router should expose stable error code");
+        test::expect_contains(e.what(), "router_missing", "missing router should expose stable error code");
     }
 
-    expect_true(thrown, "builder should reject missing router");
+    test::expect_true(thrown, "builder should reject missing router");
 }
 
 void test_builder_build_without_auth_service_throws_when_require_user_route_exists() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.manage_signals = false;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.server.manage_signals = false;
 
     const auto router = build_default_router();
-    expect_true(router->add_route(
-                    nebula::http::HttpMethod::Get, "/protected",
-                    [](const nebula::http::RouteContext&) {
-                        nebula::http::HttpResponse response;
-                        response.status = nebula::http::HttpStatus::OK;
-                        response.headers.emplace("Content-Type", "text/plain");
-                        response.body = "protected";
-                        return response;
-                    },
-                    nebula::http::RouteOptions{.require_user = true}),
-                "add require_user route should succeed");
+    test::expect_true(router->add_route(
+                          nebula::http::HttpMethod::Get, "/protected",
+                          [](const nebula::http::RouteContext&) {
+                              nebula::http::HttpResponse response;
+                              response.status = nebula::http::HttpStatus::OK;
+                              response.headers.emplace("Content-Type", "text/plain");
+                              response.body = "protected";
+                              return response;
+                          },
+                          nebula::http::RouteOptions{.require_user = true}),
+                      "add require_user route should succeed");
 
     bool thrown = false;
     try {
         [[maybe_unused]] auto server = nebula::server::ServerBuilder().with_config(config).with_router(router).build();
     } catch (const std::invalid_argument& e) {
         thrown = true;
-        expect_contains(e.what(), "auth_service_missing", "missing auth service should expose stable error code");
+        test::expect_contains(e.what(), "auth_service_missing", "missing auth service should expose stable error code");
     }
 
-    expect_true(thrown, "builder should reject missing auth service when require_user route exists");
+    test::expect_true(thrown, "builder should reject missing auth service when require_user route exists");
 }
 
 void test_builder_build_supports_multiple_runtime_instances_from_same_builder() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.manage_signals = false;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.server.manage_signals = false;
 
     auto builder = nebula::server::ServerBuilder().with_config(config).with_router(build_default_router());
     auto server1 = builder.build();
     auto server2 = builder.build();
 
-    RunResult run_result1 = RunResult::FatalError;
-    std::thread thread1([&server1, &run_result1]() { run_result1 = server1.run(); });
-    ServerThreadGuard guard1(server1, thread1);
-    wait_until_server_ready(server1);
+    server::RunResult run_result1 = server::RunResult::FatalError;
+    test::integration::ServerRunGuard guard1(server1, run_result1);
+    test::integration::wait_until_server_ready(server1);
     server1.request_stop();
-    if (thread1.joinable()) {
-        thread1.join();
-    }
-    expect_true(is_nonfatal_run_result(run_result1), "first server built from builder should stop non-fatally");
+    guard1.join();
+    test::expect_true(is_nonfatal_run_result(run_result1), "first server built from builder should stop non-fatally");
 
-    RunResult run_result2 = RunResult::FatalError;
-    std::thread thread2([&server2, &run_result2]() { run_result2 = server2.run(); });
-    ServerThreadGuard guard2(server2, thread2);
-    wait_until_server_ready(server2);
+    server::RunResult run_result2 = server::RunResult::FatalError;
+    test::integration::ServerRunGuard guard2(server2, run_result2);
+    test::integration::wait_until_server_ready(server2);
     server2.request_stop();
-    if (thread2.joinable()) {
-        thread2.join();
-    }
-    expect_true(is_nonfatal_run_result(run_result2), "second server built from same builder should stop non-fatally");
+    guard2.join();
+    test::expect_true(is_nonfatal_run_result(run_result2),
+                      "second server built from same builder should stop non-fatally");
 }
 
 void test_graceful_stop_completes_inflight_request() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-graceful",
-                                  [](const nebula::http::RouteContext&) {
-                                      std::this_thread::sleep_for(250ms);
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "slow-graceful";
-                                      return response;
-                                  }),
-                "add slow-graceful route should succeed");
+    auto server = test::integration::build_runtime(config, router);
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-graceful",
+                                        [](const nebula::http::RouteContext&) {
+                                            std::this_thread::sleep_for(250ms);
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "slow-graceful";
+                                            return response;
+                                        }),
+                      "add slow-graceful route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /slow-graceful HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
-    expect_true(send_all(fd, request), "slow request should send");
+    test::expect_true(test::integration::send_all(fd, request), "slow request should send");
 
     std::string carry;
     std::future<std::string> response_future =
@@ -1186,43 +1179,42 @@ void test_graceful_stop_completes_inflight_request() {
     std::this_thread::sleep_for(30ms);
     server.request_stop();
 
-    expect_true(response_future.wait_for(2s) == std::future_status::ready,
-                "inflight request should complete before graceful stop");
+    test::expect_true(response_future.wait_for(2s) == std::future_status::ready,
+                      "inflight request should complete before graceful stop");
     const std::string response = response_future.get();
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "graceful stop should preserve inflight response status");
-    expect_contains(response, "slow-graceful", "graceful stop should preserve inflight response body");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "graceful stop should preserve inflight response status");
+    test::expect_contains(response, "slow-graceful", "graceful stop should preserve inflight response body");
 }
 
 void test_graceful_stop_rejects_new_connections_quickly() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-gate",
-                                  [](const nebula::http::RouteContext&) {
-                                      std::this_thread::sleep_for(300ms);
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "slow-stop-gate";
-                                      return response;
-                                  }),
-                "add slow-stop-gate route should succeed");
+    auto server = test::integration::build_runtime(config, router);
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-gate",
+                                        [](const nebula::http::RouteContext&) {
+                                            std::this_thread::sleep_for(300ms);
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "slow-stop-gate";
+                                            return response;
+                                        }),
+                      "add slow-stop-gate route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int inflight_fd = connect_localhost(server.listening_port());
-    expect_true(inflight_fd >= 0, "connect should succeed");
+    const int inflight_fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(inflight_fd >= 0, "connect should succeed");
 
     const std::string request = "GET /slow-stop-gate HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
-    expect_true(send_all(inflight_fd, request), "slow request should send");
+    test::expect_true(test::integration::send_all(inflight_fd, request), "slow request should send");
 
     std::string carry;
     std::future<std::string> response_future =
@@ -1234,7 +1226,7 @@ void test_graceful_stop_rejects_new_connections_quickly() {
 
     bool rejected = false;
     for (int idx = 0; idx < 80; ++idx) {
-        const int probe_fd = connect_localhost(server.listening_port());
+        const int probe_fd = test::integration::connect_localhost(server.listening_port());
         if (probe_fd < 0) {
             rejected = true;
             break;
@@ -1245,104 +1237,100 @@ void test_graceful_stop_rejects_new_connections_quickly() {
 
     const auto reject_elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_requested_at);
-    expect_true(rejected, "new connection should be rejected after stop request");
-    expect_true(reject_elapsed < 600ms, "new connection rejection should happen quickly after stop request");
+    test::expect_true(rejected, "new connection should be rejected after stop request");
+    test::expect_true(reject_elapsed < 600ms, "new connection rejection should happen quickly after stop request");
 
-    expect_true(response_future.wait_for(2s) == std::future_status::ready,
-                "inflight request should still complete while shutdown gate is active");
+    test::expect_true(response_future.wait_for(2s) == std::future_status::ready,
+                      "inflight request should still complete while shutdown gate is active");
     const std::string response = response_future.get();
     ::close(inflight_fd);
-    expect_contains(response, "HTTP/1.1 200 OK", "inflight request should still receive a successful response");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "inflight request should still receive a successful response");
 }
 
 void test_graceful_stop_timeout_forces_close_in_bounded_time() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 1;
-    config.graceful_shutdown_timeout = 250ms;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 1;
+    config.timeouts.graceful_shutdown_timeout = 250ms;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-timeout",
-                                  [](const nebula::http::RouteContext&) {
-                                      std::this_thread::sleep_for(2s);
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "slow-stop-timeout";
-                                      return response;
-                                  }),
-                "add slow-stop-timeout route should succeed");
+    auto server = test::integration::build_runtime(config, router);
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-timeout",
+                                        [](const nebula::http::RouteContext&) {
+                                            std::this_thread::sleep_for(2s);
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "slow-stop-timeout";
+                                            return response;
+                                        }),
+                      "add slow-stop-timeout route should succeed");
 
-    RunResult run_result = RunResult::FatalError;
-    std::thread server_thread([&server, &run_result]() { run_result = server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    server::RunResult run_result = server::RunResult::FatalError;
+    test::integration::ServerRunGuard server_guard(server, run_result);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
     const std::string request = "GET /slow-stop-timeout HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
-    expect_true(send_all(fd, request), "slow timeout request should send");
+    test::expect_true(test::integration::send_all(fd, request), "slow timeout request should send");
 
     std::this_thread::sleep_for(60ms);
     const auto stop_started_at = std::chrono::steady_clock::now();
     server.request_stop();
-    if (server_thread.joinable()) {
-        server_thread.join();
-    }
+    server_guard.join();
     const auto stop_elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_started_at);
     ::close(fd);
 
-    expect_true(stop_elapsed >= 180ms, "graceful stop should wait near configured timeout before force close");
-    expect_true(stop_elapsed < 1500ms, "graceful stop should force close in bounded time");
-    expect_true(run_result == RunResult::ForcedByTimeout, "graceful stop timeout should report forced_by_timeout");
+    test::expect_true(stop_elapsed >= 180ms, "graceful stop should wait near configured timeout before force close");
+    test::expect_true(stop_elapsed < 1500ms, "graceful stop should force close in bounded time");
+    test::expect_true(run_result == server::RunResult::ForcedByTimeout,
+                      "graceful stop timeout should report forced_by_timeout");
 }
 
 void test_graceful_stop_low_timeout_without_inflight_completes() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 1;
-    config.graceful_shutdown_timeout = 30ms;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 1;
+    config.timeouts.graceful_shutdown_timeout = 30ms;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    RunResult run_result = RunResult::FatalError;
-    std::thread server_thread([&server, &run_result]() { run_result = server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    server::RunResult run_result = server::RunResult::FatalError;
+    test::integration::ServerRunGuard server_guard(server, run_result);
+    test::integration::wait_until_server_ready(server);
 
     const auto stop_started_at = std::chrono::steady_clock::now();
     server.request_stop();
-    if (server_thread.joinable()) {
-        server_thread.join();
-    }
+    server_guard.join();
     const auto stop_elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_started_at);
 
-    expect_true(run_result == RunResult::GracefulCompleted,
-                "graceful stop with low timeout should complete without forced close when no inflight work exists");
-    expect_true(stop_elapsed < 500ms, "graceful stop without inflight work should complete quickly");
+    test::expect_true(
+        run_result == server::RunResult::GracefulCompleted,
+        "graceful stop with low timeout should complete without forced close when no inflight work exists");
+    test::expect_true(stop_elapsed < 500ms, "graceful stop without inflight work should complete quickly");
 }
 
 void test_graceful_stop_client_disconnect_does_not_timeout_on_late_response() {
     using namespace std::chrono_literals;
 
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 1;
-    config.graceful_shutdown_timeout = 350ms;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 1;
+    config.timeouts.graceful_shutdown_timeout = 350ms;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
     std::promise<void> handler_started_promise;
     std::shared_future<void> handler_started = handler_started_promise.get_future().share();
     std::promise<void> release_handler_promise;
     std::shared_future<void> release_handler = release_handler_promise.get_future().share();
 
-    expect_true(
+    test::expect_true(
         router->add_route(nebula::http::HttpMethod::Get, "/slow-stop-reset",
                           [release_handler, &handler_started_promise](const nebula::http::RouteContext&) mutable {
                               handler_started_promise.set_value();
@@ -1357,16 +1345,15 @@ void test_graceful_stop_client_disconnect_does_not_timeout_on_late_response() {
                           }),
         "add slow-stop-reset route should succeed");
 
-    RunResult run_result = RunResult::FatalError;
-    std::thread server_thread([&server, &run_result]() { run_result = server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    server::RunResult run_result = server::RunResult::FatalError;
+    test::integration::ServerRunGuard server_guard(server, run_result);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
     const std::string request = "GET /slow-stop-reset HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
-    expect_true(send_all(fd, request), "slow reset request should send");
-    expect_true(handler_started.wait_for(1s) == std::future_status::ready, "handler should start before stop");
+    test::expect_true(test::integration::send_all(fd, request), "slow reset request should send");
+    test::expect_true(handler_started.wait_for(1s) == std::future_status::ready, "handler should start before stop");
 
     close_with_reset(fd);
 
@@ -1375,36 +1362,33 @@ void test_graceful_stop_client_disconnect_does_not_timeout_on_late_response() {
     std::this_thread::sleep_for(30ms);
     release_handler_promise.set_value();
 
-    if (server_thread.joinable()) {
-        server_thread.join();
-    }
+    server_guard.join();
     const auto stop_elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_started_at);
 
-    expect_true(stop_elapsed < config.graceful_shutdown_timeout,
-                "graceful stop should finish before timeout when disconnected request finishes late");
-    expect_true(run_result == RunResult::GracefulCompleted,
-                "late response after client disconnect should not force graceful stop timeout");
+    test::expect_true(stop_elapsed < config.timeouts.graceful_shutdown_timeout,
+                      "graceful stop should finish before timeout when disconnected request finishes late");
+    test::expect_true(run_result == server::RunResult::GracefulCompleted,
+                      "late response after client disconnect should not force graceful stop timeout");
 }
 
 void test_add_route_while_running() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 4;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 4;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
     const std::string path = "/dynamic-runtime";
     const std::string request = std::format("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path);
 
     const auto send_request = [&](const std::string& raw_request) {
-        const int fd = connect_localhost(server.listening_port());
-        expect_true(fd >= 0, "connect should succeed");
-        expect_true(send_all(fd, raw_request), "send request should succeed");
+        const int fd = test::integration::connect_localhost(server.listening_port());
+        test::expect_true(fd >= 0, "connect should succeed");
+        test::expect_true(test::integration::send_all(fd, raw_request), "send request should succeed");
 
         std::string carry;
         const std::string response = read_one_response(fd, carry);
@@ -1413,49 +1397,48 @@ void test_add_route_while_running() {
     };
 
     const std::string before_response = send_request(request);
-    expect_contains(before_response, "HTTP/1.1 404 Not Found", "new route should be 404 before add_route");
-    expect_contains(before_response, R"("code":"not_found")", "new route miss should use api not_found code");
+    test::expect_contains(before_response, "HTTP/1.1 404 Not Found", "new route should be 404 before add_route");
+    test::expect_contains(before_response, R"("code":"not_found")", "new route miss should use api not_found code");
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, path,
-                                  [](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "dynamic route ready";
-                                      return response;
-                                  }),
-                "first add route should succeed");
-    expect_true(!router->add_route(nebula::http::HttpMethod::Get, path,
-                                   [](const nebula::http::RouteContext&) {
-                                       nebula::http::HttpResponse response;
-                                       response.status = nebula::http::HttpStatus::OK;
-                                       response.headers.emplace("Content-Type", "text/plain");
-                                       response.body = "duplicate";
-                                       return response;
-                                   }),
-                "duplicate add route should fail");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, path,
+                                        [](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "dynamic route ready";
+                                            return response;
+                                        }),
+                      "first add route should succeed");
+    test::expect_true(!router->add_route(nebula::http::HttpMethod::Get, path,
+                                         [](const nebula::http::RouteContext&) {
+                                             nebula::http::HttpResponse response;
+                                             response.status = nebula::http::HttpStatus::OK;
+                                             response.headers.emplace("Content-Type", "text/plain");
+                                             response.body = "duplicate";
+                                             return response;
+                                         }),
+                      "duplicate add route should fail");
 
     const std::string after_response = send_request(request);
-    expect_contains(after_response, "HTTP/1.1 200 OK", "new route should be reachable after add_route");
-    expect_contains(after_response, "dynamic route ready", "new route should return expected body");
+    test::expect_contains(after_response, "HTTP/1.1 200 OK", "new route should be reachable after add_route");
+    test::expect_contains(after_response, "dynamic route ready", "new route should return expected body");
 }
 
 void test_del_route_while_running() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 4;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 4;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
     const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     const auto send_request = [&](const std::string& raw_request) {
-        const int fd = connect_localhost(server.listening_port());
-        expect_true(fd >= 0, "connect should succeed");
-        expect_true(send_all(fd, raw_request), "send request should succeed");
+        const int fd = test::integration::connect_localhost(server.listening_port());
+        test::expect_true(fd >= 0, "connect should succeed");
+        test::expect_true(test::integration::send_all(fd, raw_request), "send request should succeed");
 
         std::string carry;
         const std::string response = read_one_response(fd, carry);
@@ -1464,33 +1447,33 @@ void test_del_route_while_running() {
     };
 
     const std::string before_response = send_request(request);
-    expect_contains(before_response, "HTTP/1.1 200 OK", "healthz should be reachable before del_route");
+    test::expect_contains(before_response, "HTTP/1.1 200 OK", "healthz should be reachable before del_route");
 
-    expect_true(router->del_route(nebula::http::HttpMethod::Get, "/healthz"), "del existing route should succeed");
-    expect_true(!router->del_route(nebula::http::HttpMethod::Get, "/healthz"),
-                "del same route twice should report false");
+    test::expect_true(router->del_route(nebula::http::HttpMethod::Get, "/healthz"),
+                      "del existing route should succeed");
+    test::expect_true(!router->del_route(nebula::http::HttpMethod::Get, "/healthz"),
+                      "del same route twice should report false");
 
     const std::string after_response = send_request(request);
-    expect_contains(after_response, "HTTP/1.1 404 Not Found", "healthz should be 404 after del_route");
-    expect_contains(after_response, R"("code":"not_found")", "deleted route should use api not_found code");
+    test::expect_contains(after_response, "HTTP/1.1 404 Not Found", "healthz should be 404 after del_route");
+    test::expect_contains(after_response, R"("code":"not_found")", "deleted route should use api not_found code");
 }
 
 void test_mod_route_while_running() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 4;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 4;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
     const std::string request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     const auto send_request = [&](const std::string& raw_request) {
-        const int fd = connect_localhost(server.listening_port());
-        expect_true(fd >= 0, "connect should succeed");
-        expect_true(send_all(fd, raw_request), "send request should succeed");
+        const int fd = test::integration::connect_localhost(server.listening_port());
+        test::expect_true(fd >= 0, "connect should succeed");
+        test::expect_true(test::integration::send_all(fd, raw_request), "send request should succeed");
 
         std::string carry;
         const std::string response = read_one_response(fd, carry);
@@ -1499,559 +1482,552 @@ void test_mod_route_while_running() {
     };
 
     const std::string before_response = send_request(request);
-    expect_contains(before_response, R"({"status":"ok"})", "healthz default body should exist before mod_route");
+    test::expect_contains(before_response, R"({"status":"ok"})", "healthz default body should exist before mod_route");
 
-    expect_true(router->mod_route(nebula::http::HttpMethod::Get, "/healthz",
-                                  [](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "healthz modified";
-                                      return response;
-                                  }),
-                "mod existing route should succeed");
-    expect_true(!router->mod_route(nebula::http::HttpMethod::Get, "/missing",
-                                   [](const nebula::http::RouteContext&) {
-                                       nebula::http::HttpResponse response;
-                                       response.status = nebula::http::HttpStatus::OK;
-                                       response.headers.emplace("Content-Type", "text/plain");
-                                       response.body = "missing";
-                                       return response;
-                                   }),
-                "mod missing route should fail");
+    test::expect_true(router->mod_route(nebula::http::HttpMethod::Get, "/healthz",
+                                        [](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "healthz modified";
+                                            return response;
+                                        }),
+                      "mod existing route should succeed");
+    test::expect_true(!router->mod_route(nebula::http::HttpMethod::Get, "/missing",
+                                         [](const nebula::http::RouteContext&) {
+                                             nebula::http::HttpResponse response;
+                                             response.status = nebula::http::HttpStatus::OK;
+                                             response.headers.emplace("Content-Type", "text/plain");
+                                             response.body = "missing";
+                                             return response;
+                                         }),
+                      "mod missing route should fail");
 
     const std::string after_response = send_request(request);
-    expect_contains(after_response, "HTTP/1.1 200 OK", "healthz should still return 200 after mod_route");
-    expect_contains(after_response, "healthz modified", "healthz should return modified body");
+    test::expect_contains(after_response, "HTTP/1.1 200 OK", "healthz should still return 200 after mod_route");
+    test::expect_contains(after_response, "healthz modified", "healthz should return modified body");
 }
 
 void test_method_not_allowed_includes_allow_header() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/allow-check",
-                                  [](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "get";
-                                      return response;
-                                  }),
-                "add get route should succeed");
-    expect_true(router->add_route(nebula::http::HttpMethod::Post, "/allow-check",
-                                  [](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "post";
-                                      return response;
-                                  }),
-                "add post route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/allow-check",
+                                        [](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "get";
+                                            return response;
+                                        }),
+                      "add get route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Post, "/allow-check",
+                                        [](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "post";
+                                            return response;
+                                        }),
+                      "add post route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "PUT /allow-check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 405 Method Not Allowed", "unknown route method should return 405");
-    expect_contains(response, "\r\nAllow: GET, POST\r\n", "405 should include Allow header with method set");
-    expect_contains(response, R"("code":"method_not_allowed")", "405 body should use api method_not_allowed code");
-    expect_contains(response, R"("message":"method not allowed")", "405 body should use api message");
+    test::expect_contains(response, "HTTP/1.1 405 Method Not Allowed", "unknown route method should return 405");
+    test::expect_contains(response, "\r\nAllow: GET, POST\r\n", "405 should include Allow header with method set");
+    test::expect_contains(response, R"("code":"method_not_allowed")",
+                          "405 body should use api method_not_allowed code");
+    test::expect_contains(response, R"("message":"method not allowed")", "405 body should use api message");
 }
 
 void test_dynamic_route_runtime_match_and_params() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/users/{id}",
-                                  [](const nebula::http::RouteContext& context) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = std::format("user={}", context.params.at("id"));
-                                      return response;
-                                  }),
-                "add dynamic route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/users/{id}",
+                                        [](const nebula::http::RouteContext& context) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = std::format("user={}", context.params.at("id"));
+                                            return response;
+                                        }),
+                      "add dynamic route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /users/42 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "dynamic route should return 200");
-    expect_contains(response, "user=42", "dynamic route should pass path param to handler");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "dynamic route should return 200");
+    test::expect_contains(response, "user=42", "dynamic route should pass path param to handler");
 }
 
 void test_static_route_precedence_over_dynamic_route_runtime() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
+    auto server = test::integration::build_runtime(config, router);
 
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/priority/{id}",
-                                  [](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "dynamic";
-                                      return response;
-                                  }),
-                "add dynamic route should succeed");
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/priority/me",
-                                  [](const nebula::http::RouteContext&) {
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "static";
-                                      return response;
-                                  }),
-                "add static route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/priority/{id}",
+                                        [](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "dynamic";
+                                            return response;
+                                        }),
+                      "add dynamic route should succeed");
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/priority/me",
+                                        [](const nebula::http::RouteContext&) {
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "static";
+                                            return response;
+                                        }),
+                      "add static route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /priority/me HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "matched route should return 200");
-    expect_contains(response, "static", "static route should be preferred over dynamic route");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "matched route should return 200");
+    test::expect_contains(response, "static", "static route should be preferred over dynamic route");
 }
 
 void test_chunked_request_echo_endpoint() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string body = "hello chunked";
     const std::string request =
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
         "5\r\nhello\r\n8\r\n chunked\r\n0\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK", "chunked request should return 200");
-    expect_contains(response, body, "chunked request should decode and echo body");
+    test::expect_contains(response, "HTTP/1.1 200 OK", "chunked request should return 200");
+    test::expect_contains(response, body, "chunked request should decode and echo body");
 }
 
 void test_chunked_many_boundaries_within_decoded_limit_returns_200() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.max_header_bytes = 128U;
-    config.max_body_bytes = 16U;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.limits.max_header_bytes = 128U;
+    config.limits.max_body_bytes = 16U;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string body = "abcdefghijklmnop";
     const std::string request = std::format(
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{}",
         encode_chunked_single_byte_chunks(body));
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 200 OK",
-                    "chunked request with many boundaries under decoded limit should return 200");
-    expect_contains(response, body,
-                    "chunked request with many boundaries under decoded limit should decode and echo body");
+    test::expect_contains(response, "HTTP/1.1 200 OK",
+                          "chunked request with many boundaries under decoded limit should return 200");
+    test::expect_contains(response, body,
+                          "chunked request with many boundaries under decoded limit should decode and echo body");
 }
 
 void test_missing_host_returns_400() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthz HTTP/1.1\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 400 Bad Request", "missing host should return 400");
-    expect_contains(response, R"("code":"bad_request")", "missing host body should use api bad_request code");
-    expect_contains(response, R"("message":"missing host header")", "missing host body should explain missing host");
+    test::expect_contains(response, "HTTP/1.1 400 Bad Request", "missing host should return 400");
+    test::expect_contains(response, R"("code":"bad_request")", "missing host body should use api bad_request code");
+    test::expect_contains(response, R"("message":"missing host header")",
+                          "missing host body should explain missing host");
 }
 
 void test_empty_host_returns_400() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthz HTTP/1.1\r\nHost:\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 400 Bad Request", "empty host should return 400");
-    expect_contains(response, R"("code":"bad_request")", "empty host body should use api bad_request code");
-    expect_contains(response, R"("message":"invalid host header")",
-                    "empty host body should explain empty host rejection");
+    test::expect_contains(response, "HTTP/1.1 400 Bad Request", "empty host should return 400");
+    test::expect_contains(response, R"("code":"bad_request")", "empty host body should use api bad_request code");
+    test::expect_contains(response, R"("message":"invalid host header")",
+                          "empty host body should explain empty host rejection");
 }
 
 void test_unknown_method_returns_501() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "FOO /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 501 Not Implemented", "unknown method should return 501");
-    expect_contains(response, R"("code":"not_implemented")", "unknown method body should use api not_implemented code");
-    expect_contains(response, R"("message":"unsupported http method")",
-                    "unknown method body should explain unsupported method");
+    test::expect_contains(response, "HTTP/1.1 501 Not Implemented", "unknown method should return 501");
+    test::expect_contains(response, R"("code":"not_implemented")",
+                          "unknown method body should use api not_implemented code");
+    test::expect_contains(response, R"("message":"unsupported http method")",
+                          "unknown method body should explain unsupported method");
 }
 
 void test_unsupported_http_version_returns_505() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthz HTTP/2\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 505 HTTP Version Not Supported", "unsupported version should return 505");
-    expect_contains(response, R"("code":"http_version_not_supported")",
-                    "unsupported version body should use api http_version_not_supported code");
-    expect_contains(response, R"("message":"http version not supported")",
-                    "unsupported version body should use api default message");
+    test::expect_contains(response, "HTTP/1.1 505 HTTP Version Not Supported", "unsupported version should return 505");
+    test::expect_contains(response, R"("code":"http_version_not_supported")",
+                          "unsupported version body should use api http_version_not_supported code");
+    test::expect_contains(response, R"("message":"http version not supported")",
+                          "unsupported version body should use api default message");
 }
 
 void test_invalid_http_version_returns_400() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthz HTTP/2.beta\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 400 Bad Request", "invalid version format should return 400");
-    expect_contains(response, R"("code":"bad_request")", "invalid version body should use api bad_request code");
-    expect_contains(response, R"("message":"invalid http version")",
-                    "invalid version body should explain invalid version format");
+    test::expect_contains(response, "HTTP/1.1 400 Bad Request", "invalid version format should return 400");
+    test::expect_contains(response, R"("code":"bad_request")", "invalid version body should use api bad_request code");
+    test::expect_contains(response, R"("message":"invalid http version")",
+                          "invalid version body should explain invalid version format");
 }
 
 void test_content_too_large_returns_413() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.max_body_bytes = 8U;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.limits.max_body_bytes = 8U;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string body = "0123456789";
     const std::string request =
         std::format("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.size(), body);
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 413 Content Too Large", "oversized body should return 413");
-    expect_contains(response, R"("code":"content_too_large")", "oversized body should use api content_too_large code");
-    expect_contains(response, R"("message":"content too large")", "oversized body should use api default message");
+    test::expect_contains(response, "HTTP/1.1 413 Content Too Large", "oversized body should return 413");
+    test::expect_contains(response, R"("code":"content_too_large")",
+                          "oversized body should use api content_too_large code");
+    test::expect_contains(response, R"("message":"content too large")",
+                          "oversized body should use api default message");
 }
 
 void test_header_too_large_returns_431() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.max_header_bytes = 128U;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.limits.max_header_bytes = 128U;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request =
         std::format("GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Oversized: {}\r\nConnection: close\r\n\r\n",
                     std::string(256U, 'a'));
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 431 Request Header Fields Too Large", "oversized header should return 431");
-    expect_contains(response, R"("code":"request_header_fields_too_large")",
-                    "oversized header should use api request_header_fields_too_large code");
-    expect_contains(response, R"("message":"request header fields too large")",
-                    "oversized header should use api default message");
+    test::expect_contains(response, "HTTP/1.1 431 Request Header Fields Too Large",
+                          "oversized header should return 431");
+    test::expect_contains(response, R"("code":"request_header_fields_too_large")",
+                          "oversized header should use api request_header_fields_too_large code");
+    test::expect_contains(response, R"("message":"request header fields too large")",
+                          "oversized header should use api default message");
 }
 
 void test_uri_too_long_returns_414() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.max_request_target_bytes = 8U;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.limits.max_request_target_bytes = 8U;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "GET /healthzz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
     std::string carry;
     const std::string response = read_one_response(fd, carry);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 414 URI Too Long", "oversized request-target should return 414");
-    expect_contains(response, R"("code":"uri_too_long")", "oversized request-target should use api uri_too_long code");
-    expect_contains(response, R"("message":"uri too long")", "oversized request-target should use api default message");
+    test::expect_contains(response, "HTTP/1.1 414 URI Too Long", "oversized request-target should return 414");
+    test::expect_contains(response, R"("code":"uri_too_long")",
+                          "oversized request-target should use api uri_too_long code");
+    test::expect_contains(response, R"("message":"uri too long")",
+                          "oversized request-target should use api default message");
 }
 
 void test_head_parse_error_suppresses_body() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string request = "HEAD /healthz HTTP/1.1\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, request), "send request should succeed");
+    test::expect_true(test::integration::send_all(fd, request), "send request should succeed");
 
-    const std::string response = read_until_close(fd);
+    const std::string response = test::integration::read_until_close(fd);
     ::close(fd);
 
-    expect_contains(response, "HTTP/1.1 400 Bad Request", "head parse error should return 400");
-    expect_contains(response, "\r\nContent-Type: application/json; charset=utf-8\r\n",
-                    "head parse error should use api content-type");
+    test::expect_contains(response, "HTTP/1.1 400 Bad Request", "head parse error should return 400");
+    test::expect_contains(response, "\r\nContent-Type: application/json; charset=utf-8\r\n",
+                          "head parse error should use api content-type");
 
     const std::size_t header_end = response.find("\r\n\r\n");
-    expect_true(header_end != std::string::npos, "head parse error response should contain header terminator");
+    test::expect_true(header_end != std::string::npos, "head parse error response should contain header terminator");
 
     const std::size_t content_length = parse_content_length(response.substr(0, header_end + 2U));
-    expect_true(content_length > 0U, "head parse error should keep non-zero content-length");
+    test::expect_true(content_length > 0U, "head parse error should keep non-zero content-length");
 
     const std::size_t actual_body_len = response.size() - (header_end + 4U);
-    expect_true(actual_body_len == 0U, "head parse error response must not include body bytes");
+    test::expect_true(actual_body_len == 0U, "head parse error response must not include body bytes");
 }
 
 void test_parse_error_responds_once_before_close() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    auto server = build_runtime(config, build_default_router());
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    auto server = test::integration::build_runtime(config, build_default_router());
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string bad_request =
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: abc\r\nConnection: close\r\n\r\n";
-    expect_true(send_all(fd, bad_request), "send bad request should succeed");
+    test::expect_true(test::integration::send_all(fd, bad_request), "send bad request should succeed");
 
     const std::string extra = std::string(512U, 'x');
     for (int idx = 0; idx < 64; ++idx) {
-        if (!send_all(fd, extra)) {
+        if (!test::integration::send_all(fd, extra)) {
             break;
         }
     }
 
-    const std::string all_responses = read_until_close(fd);
+    const std::string all_responses = test::integration::read_until_close(fd);
     ::close(fd);
 
-    expect_contains(all_responses, "HTTP/1.1 400 Bad Request", "parse error should return 400");
-    expect_contains(all_responses, R"("code":"bad_request")", "parse error should use api bad_request code");
-    const std::size_t response_count = count_occurrences(all_responses, "HTTP/1.1 ");
-    expect_true(response_count == 1U, "parse error should respond once before closing connection");
+    test::expect_contains(all_responses, "HTTP/1.1 400 Bad Request", "parse error should return 400");
+    test::expect_contains(all_responses, R"("code":"bad_request")", "parse error should use api bad_request code");
+    const std::size_t response_count = test::count_occurrences(all_responses, "HTTP/1.1 ");
+    test::expect_true(response_count == 1U, "parse error should respond once before closing connection");
 }
 
 void test_processing_state_pending_buffer_limit() {
-    nebula::app::ServerConfig config;
-    config.port = 0;
-    config.worker_thread_count = 2;
-    config.max_header_bytes = 96U;
-    config.max_body_bytes = 32U;
+    nebula::app::AppConfig config;
+    config.server.port = 0;
+    config.server.worker_thread_count = 2;
+    config.limits.max_header_bytes = 96U;
+    config.limits.max_body_bytes = 32U;
     const auto router = build_default_router();
-    auto server = build_runtime(config, router);
-    expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow",
-                                  [](const nebula::http::RouteContext&) {
-                                      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    auto server = test::integration::build_runtime(config, router);
+    test::expect_true(router->add_route(nebula::http::HttpMethod::Get, "/slow",
+                                        [](const nebula::http::RouteContext&) {
+                                            std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
-                                      nebula::http::HttpResponse response;
-                                      response.status = nebula::http::HttpStatus::OK;
-                                      response.headers.emplace("Content-Type", "text/plain");
-                                      response.body = "slow";
-                                      return response;
-                                  }),
-                "add slow route should succeed");
+                                            nebula::http::HttpResponse response;
+                                            response.status = nebula::http::HttpStatus::OK;
+                                            response.headers.emplace("Content-Type", "text/plain");
+                                            response.body = "slow";
+                                            return response;
+                                        }),
+                      "add slow route should succeed");
 
-    std::thread server_thread([&server]() { server.run(); });
-    ServerThreadGuard server_guard(server, server_thread);
-    wait_until_server_ready(server);
+    test::integration::ServerRunGuard server_guard(server);
+    test::integration::wait_until_server_ready(server);
 
-    const int fd = connect_localhost(server.listening_port());
-    expect_true(fd >= 0, "connect should succeed");
+    const int fd = test::integration::connect_localhost(server.listening_port());
+    test::expect_true(fd >= 0, "connect should succeed");
 
     const std::string slow_request = "GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
-    expect_true(send_all(fd, slow_request), "slow request should send");
+    test::expect_true(test::integration::send_all(fd, slow_request), "slow request should send");
 
     const std::string queued_close_request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     for (int idx = 0; idx < 32; ++idx) {
-        if (!send_all(fd, queued_close_request)) {
+        if (!test::integration::send_all(fd, queued_close_request)) {
             break;
         }
     }
 
-    const std::string all_responses = read_until_close(fd);
+    const std::string all_responses = test::integration::read_until_close(fd);
     ::close(fd);
 
-    const std::size_t response_count = count_occurrences(all_responses, "HTTP/1.1 ");
-    expect_true(response_count <= 1U, "pending buffer limit should close connection before multiple queued responses");
+    const std::size_t response_count = test::count_occurrences(all_responses, "HTTP/1.1 ");
+    test::expect_true(response_count <= 1U,
+                      "pending buffer limit should close connection before multiple queued responses");
 }
 
 int run_http_server_integration_tests() {
-    const nebula::testsupport::TempDir log_dir("nebula-http-server-integration-log");
-    nebula::common::Logger::instance().initialize(nebula::common::LogLevel::Warning, log_dir.path(), false);
+    nebula::common::Logger::instance().set_level(nebula::common::LogLevel::Warning);
 
-    const std::vector<nebula::testsupport::TestCase> tests = {
+    const std::vector<nebula::test::TestCase> tests = {
+        {"healthz endpoint", test_healthz_endpoint},
         {"signal mask restored after http server destroyed", test_signal_mask_restored_after_http_server_destroyed},
         {"signal shutdown remains available after restart", test_signal_shutdown_remains_available_after_restart},
         {"signal shutdown with preexisting unmasked thread", test_signal_shutdown_with_preexisting_unmasked_thread},
-        {"healthz endpoint", test_healthz_endpoint},
         {"healthz endpoint absolute form", test_healthz_endpoint_absolute_form},
         {"healthz endpoint with query", test_healthz_endpoint_with_query},
         {"root endpoint mapped to healthz by default", test_root_endpoint_mapped_to_healthz_by_default},
         {"root endpoint not found when root mapping disabled", test_root_endpoint_not_found_when_root_mapping_disabled},
         {"head method suppresses body", test_head_method_suppresses_body},
         {"echo endpoint", test_echo_endpoint},
-        {"auth route registration fails when database unreachable",
-         test_auth_route_registration_fails_when_database_unreachable},
-        {"request completed log uses raw request line", test_request_completed_log_uses_raw_request_line},
+        {"request completed log uses raw request line for non-sensitive route",
+         test_request_completed_log_uses_raw_request_line_for_non_sensitive_route},
+        {"request completed log redacts download ticket", test_request_completed_log_redacts_download_ticket},
         {"connections dispatched to multiple sub reactors", test_connections_dispatched_to_multiple_sub_reactors},
+        {"sub reactor count above hardware logs warning", test_sub_reactor_count_above_hardware_logs_warning},
         {"io threads zero uses default value in constructor",
          test_sub_reactor_count_zero_uses_default_value_in_constructor},
         {"keep alive two requests", test_keep_alive_two_requests},
@@ -2100,11 +2076,11 @@ int run_http_server_integration_tests() {
         {"processing state pending buffer limit", test_processing_state_pending_buffer_limit},
     };
 
-    return nebula::testsupport::run_tests(tests);
+    return nebula::test::run_tests(tests);
 }
 
 }  // namespace
 
 int main() {
-    return nebula::testsupport::run_main(run_http_server_integration_tests);
+    return nebula::test::run_main(run_http_server_integration_tests);
 }

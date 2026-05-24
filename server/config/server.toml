@@ -18,18 +18,13 @@ graceful_shutdown_timeout_ms = 5000
 [limits]
 max_header_bytes = 16384
 max_request_target_bytes = 8192
-max_body_bytes = 1048576
+max_body_bytes = 8388608
 
 [routes]
 enable_healthz = true
 enable_echo = true
 enable_root_default = true
 root_default_path = "/healthz"
-
-[auth]
-jwt_secret_path = "runtime/secrets/jwt.key"
-access_token_ttl_s = 3600
-password_hash_iterations = 600000
 
 [database]
 host = "127.0.0.1"
@@ -38,10 +33,16 @@ name = "nebula"
 user = "nebula"
 password_env = "NEBULA_DATABASE_PASSWORD"
 max_connections = 8
-connect_timeout_ms = 3000
+connect_timeout_s = 3
 acquire_timeout_ms = 3000
+
+[auth]
+jwt_secret_path = "runtime/secrets/jwt.key"
+access_token_ttl_s = 3600
+password_hash_iterations = 600000
 
 [storage]
 root_dir = "runtime/files"
 upload_session_ttl_s = 86400
-max_file_mb = 64
+download_ticket_ttl_s = 120
+max_file_mb = 512

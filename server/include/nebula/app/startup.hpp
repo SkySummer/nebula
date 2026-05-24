@@ -3,22 +3,19 @@
 
 #include <filesystem>
 #include <span>
-#include <string>
 
-#include "nebula/app/server_config.hpp"
+#include "nebula/app/app_config.hpp"
 
 namespace nebula::app {
 
-struct StartupResult {
+struct StartupContext {
     bool ok = false;
-    ServerConfig config;
+    AppConfig config;
+    AppConfigSource config_source = AppConfigSource::Default;
     std::filesystem::path config_path;
-    ServerConfigSource config_source = ServerConfigSource::Default;
-    std::string error;
-
-    StartupResult() = default;
-    explicit StartupResult(std::span<char*> args);
 };
+
+[[nodiscard]] StartupContext startup(std::span<char*> args);
 
 }  // namespace nebula::app
 

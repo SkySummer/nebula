@@ -5,17 +5,6 @@
 
 namespace nebula::net {
 
-namespace {
-
-bool ctl(int epoll_fd, int op, int fd, std::uint32_t events) {
-    epoll_event event{};
-    event.events = events;
-    event.data.fd = fd;
-    return ::epoll_ctl(epoll_fd, op, fd, &event) == 0;
-}
-
-}  // namespace
-
 EpollLoop::~EpollLoop() noexcept {
     close();
 }
@@ -53,33 +42,40 @@ int EpollLoop::fd() const {
     return fd_;
 }
 
-bool EpollLoop::add(int fd, std::uint32_t events) const {
+bool EpollLoop::ctl(int op, int fd, std::uint32_t events) const {
     if (fd_ < 0) {
         return false;
     }
-    return ctl(fd_, EPOLL_CTL_ADD, fd, events);
+
+    epoll_event event{};
+    event.events = events;
+    event.data.fd = fd;
+    return ::epoll_ctl(fd_, op, fd, &event) == 0;
+}
+
+bool EpollLoop::ctl(int op, int fd) const {
+    if (fd_ < 0) {
+        return false;
+    }
+    return ::epoll_ctl(fd_, op, fd, nullptr) == 0;
+}
+
+bool EpollLoop::add(int fd, std::uint32_t events) const {
+    return ctl(EPOLL_CTL_ADD, fd, events);
 }
 
 bool EpollLoop::mod(int fd, std::uint32_t events) const {
-    if (fd_ < 0) {
-        return false;
-    }
-    return ctl(fd_, EPOLL_CTL_MOD, fd, events);
+    return ctl(EPOLL_CTL_MOD, fd, events);
 }
 
 bool EpollLoop::del(int fd) const {
-    if (fd_ < 0) {
-        return false;
-    }
-
-    return ::epoll_ctl(fd_, EPOLL_CTL_DEL, fd, nullptr) == 0;
+    return ctl(EPOLL_CTL_DEL, fd);
 }
 
 int EpollLoop::wait(std::span<epoll_event> out_events, int timeout_ms) const {
     if (fd_ < 0 || out_events.empty()) {
         return -1;
     }
-
     return ::epoll_wait(fd_, out_events.data(), static_cast<int>(out_events.size()), timeout_ms);
 }
 
