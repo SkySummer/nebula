@@ -18,9 +18,9 @@
 #include "nebula/common/base/arithmetic.hpp"
 #include "nebula/common/log/logger.hpp"
 #include "nebula/common/platform/posix.hpp"
-#include "nebula/http/redaction/request_redaction.hpp"
 #include "nebula/http/codec/parser.hpp"
 #include "nebula/http/codec/response_writer.hpp"
+#include "nebula/http/redaction/request_redaction.hpp"
 #include "nebula/net/eventfd.hpp"
 #include "nebula/server/reactor/constants.hpp"
 
@@ -984,8 +984,7 @@ void SubReactor::apply_response_to_connection(Connection& connection, const http
     const std::string serialized_response = http::serialize_http_response(response, !close_after_write, suppress_body);
     const auto latency = std::chrono::steady_clock::now() - request_started_at;
     const auto latency_ms = std::chrono::duration_cast<std::chrono::milliseconds>(latency).count();
-    const std::string quoted_request =
-        quote_request_line_for_log(http::redact_request_line(request_line));
+    const std::string quoted_request = quote_request_line_for_log(http::redact_request_line(request_line));
 
     common::Logger::instance()
         .info("request completed")

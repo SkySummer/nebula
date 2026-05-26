@@ -17,27 +17,6 @@
 
 namespace nebula::auth {
 
-namespace {
-
-void log_query_error(std::string_view operation, const char* error) {
-    common::Logger::instance()
-        .error("user postgres query failed")
-        .field("operation", operation)
-        .field("error", error != nullptr ? error : "unknown")
-        .field("decision", "return_internal_error");
-}
-
-void log_sql_error(std::string_view operation, const pqxx::sql_error& error) {
-    common::Logger::instance()
-        .error("user postgres query failed")
-        .field("operation", operation)
-        .field("sql_state", error.sqlstate())
-        .field("error", error.what())
-        .field("decision", "return_internal_error");
-}
-
-}  // namespace
-
 AuthRepository::AuthRepository(std::shared_ptr<database::ConnectionPool> database_pool)
     : database_pool_(std::move(database_pool)) {
     if (database_pool_ == nullptr) {
@@ -74,6 +53,13 @@ bool AuthRepository::check_schema_ready() {
                 return true;
         }
         std::unreachable();
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("auth repository readiness check failed")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_not_ready");
+        return false;
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("auth repository readiness check failed")
@@ -105,16 +91,25 @@ std::expected<UserAuthRecord, UserCreateError> AuthRepository::create_user(std::
             return std::unexpected(UserCreateError::DuplicateUsername);
         }
 
-        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.front());
+        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.one_row());
         if (!info.has_value()) {
             return std::unexpected(UserCreateError::InternalError);
         }
         return *info;
     } catch (const pqxx::sql_error& e) {
-        log_sql_error("create_user", e);
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "create_user")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserCreateError::InternalError);
     } catch (const std::exception& e) {
-        log_query_error("create_user", e.what());
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "create_user")
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserCreateError::InternalError);
     }
 }
@@ -132,13 +127,25 @@ std::expected<UserAuthRecord, UserFindError> AuthRepository::find_user_by_userna
             return std::unexpected(UserFindError::NotFound);
         }
 
-        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.front());
+        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.one_row());
         if (!info.has_value()) {
             return std::unexpected(UserFindError::InternalError);
         }
         return *info;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "find_by_username")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(UserFindError::InternalError);
     } catch (const std::exception& e) {
-        log_query_error("find_by_username", e.what());
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "find_by_username")
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserFindError::InternalError);
     }
 }
@@ -160,13 +167,25 @@ std::expected<UserAuthRecord, UserFindError> AuthRepository::find_user_by_id(std
             return std::unexpected(UserFindError::NotFound);
         }
 
-        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.front());
+        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.one_row());
         if (!info.has_value()) {
             return std::unexpected(UserFindError::InternalError);
         }
         return *info;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "find_by_user_id")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(UserFindError::InternalError);
     } catch (const std::exception& e) {
-        log_query_error("find_by_user_id", e.what());
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "find_by_user_id")
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserFindError::InternalError);
     }
 }
@@ -192,16 +211,25 @@ std::expected<UserAuthRecord, UserPasswordUpdateError> AuthRepository::update_pa
             return std::unexpected(UserPasswordUpdateError::NotFound);
         }
 
-        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.front());
+        const std::optional<UserAuthRecord> info = parse_user_auth_row(rows.one_row());
         if (!info.has_value()) {
             return std::unexpected(UserPasswordUpdateError::InternalError);
         }
         return *info;
     } catch (const pqxx::sql_error& e) {
-        log_sql_error("update_password_hash", e);
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "update_password_hash")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserPasswordUpdateError::InternalError);
     } catch (const std::exception& e) {
-        log_query_error("update_password_hash", e.what());
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "update_password_hash")
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserPasswordUpdateError::InternalError);
     }
 }
@@ -222,8 +250,8 @@ std::optional<UserListPage> AuthRepository::list_users(std::int64_t limit, std::
 
         std::vector<UserProfile> users;
         users.reserve(rows.size());
-        for (const pqxx::row& row : rows) {
-            const std::optional<UserProfile> info = parse_user_profile_row(row);
+        for (const auto row : rows) {
+            const std::optional<UserProfile> info = parse_user_profile_row(pqxx::row(row));
             if (!info.has_value()) {
                 return std::nullopt;
             }
@@ -242,8 +270,20 @@ std::optional<UserListPage> AuthRepository::list_users(std::int64_t limit, std::
             .offset = offset,
             .has_more = has_more,
         };
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "list_users")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::nullopt;
     } catch (const std::exception& e) {
-        log_query_error("list_users", e.what());
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "list_users")
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::nullopt;
     }
 }
@@ -269,7 +309,7 @@ std::expected<UserProfile, UserRoleStatusUpdateError> AuthRepository::update_use
             return std::unexpected(UserRoleStatusUpdateError::NotFound);
         }
 
-        const std::optional<UserProfile> current = parse_user_profile_row(current_rows.front());
+        const std::optional<UserProfile> current = parse_user_profile_row(current_rows.one_row());
         if (!current.has_value()) {
             return std::unexpected(UserRoleStatusUpdateError::InternalError);
         }
@@ -296,16 +336,25 @@ std::expected<UserProfile, UserRoleStatusUpdateError> AuthRepository::update_use
             return std::unexpected(UserRoleStatusUpdateError::NotFound);
         }
 
-        const std::optional<UserProfile> info = parse_user_profile_row(updated_rows.front());
+        const std::optional<UserProfile> info = parse_user_profile_row(updated_rows.one_row());
         if (!info.has_value()) {
             return std::unexpected(UserRoleStatusUpdateError::InternalError);
         }
         return *info;
     } catch (const pqxx::sql_error& e) {
-        log_sql_error("update_user", e);
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "update_user")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserRoleStatusUpdateError::InternalError);
     } catch (const std::exception& e) {
-        log_query_error("update_user", e.what());
+        common::Logger::instance()
+            .error("user postgres query failed")
+            .field("operation", "update_user")
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
         return std::unexpected(UserRoleStatusUpdateError::InternalError);
     }
 }

@@ -11,7 +11,7 @@ RowCheckStatus check_row_ready(const pqxx::row& row, std::size_t expected_size) 
         return RowCheckStatus::InvalidSize;
     }
 
-    for (const pqxx::field& field : row) {
+    for (const auto field : row) {
         if (field.is_null()) {
             return RowCheckStatus::NullField;
         }

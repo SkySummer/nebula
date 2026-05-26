@@ -1,52 +1,180 @@
 # Nebula
 
+Nebula 是一个基于 C++23 的服务端项目，使用 PostgreSQL 作为持久化存储，采用 Conan 2 + CMake 构建。主要依赖包括 gRPC、libpqxx、OpenSSL。
+
 ## 部署流程
 
-以下步骤以 Linux 环境为前提，命令默认在仓库根目录执行。
+以下步骤适用于 Linux 环境，命令默认在仓库根目录执行。容器命令以 `podman` 为例，使用 `docker` 时将命令中的 `podman` 替换为 `docker` 即可。
 
-### 1. 准备依赖
+### 1. 环境准备
 
-部署前需要先安装以下工具和库：
+需要以下工具：
 
-- `gcc 13+` 或兼容的 C++23 编译器
-- `cmake`
-- `pkg-config`
-- OpenSSL 开发库
-- `libpqxx` 开发库
-- `podman` 或 `docker`
+- GCC 13+ 或其他兼容 C++23 的编译器
+- CMake 3.20+
+- Conan 2.x
+- Podman 或 Docker
 
-本文的容器命令默认以 `podman` 为例；如果你使用 `docker`，可将命令中的 `podman` 直接替换为 `docker`。
+首次使用 Conan 2 时，先生成本机 profile：
+
+```bash
+conan profile detect
+```
 
 ### 2. 构建服务
 
+构建 Release 版本：
+
 ```bash
-cmake -S server -B server/build -DCMAKE_BUILD_TYPE=Release
-cmake --build server/build -j"$(nproc)"
+conan install server \
+    --output-folder=server/build/release \
+    --build=missing \
+    -pr=server/conanprofile \
+    -s build_type=Release
+
+cmake --preset release
+cmake --build --preset release --parallel
 ```
 
-构建完成后，服务可执行文件位于：
+构建产物位于 `./server/build/release/bin/nebula`。
 
-```bash
-./server/build/bin/nebula
+### 3. 准备 PostgreSQL
+
+默认配置文件 [server/config/server.toml](server/config/server.toml) 中的数据库参数：
+
+```toml
+[database]
+host=127.0.0.1
+port=5432
+name=nebula
+user=nebula
+password_env=NEBULA_DATABASE_PASSWORD
 ```
 
-### 3. 运行测试
+服务需要一个可访问的 PostgreSQL 实例。如果直接按默认配置部署，可以启动一个本地容器：
 
-如果你希望在部署前先做一次基础验证，可以直接运行：
+> 以下命令中的密码 `nebula` 仅用于本地演示。生产环境请替换为强密码，并同步更新 `NEBULA_DATABASE_PASSWORD`。
 
 ```bash
-ctest --test-dir server/build --output-on-failure
+podman run -d \
+    --name nebula-postgres \
+    -e POSTGRES_DB=nebula \
+    -e POSTGRES_USER=nebula \
+    -e POSTGRES_PASSWORD=nebula \
+    -p 5432:5432 \
+    -v nebula-pgdata:/var/lib/postgresql/data \
+    docker.io/library/postgres:16
+```
+
+确认数据库就绪（输出包含 `accepting connections` 即可继续）：
+
+```bash
+podman exec nebula-postgres pg_isready -U nebula -d nebula
+```
+
+如果使用自定义数据库实例，请同步修改 [server/config/server.toml](server/config/server.toml) 中的 `[database]` 段，或准备一份新的配置文件并通过 `--config` 传入。
+
+### 4. 初始化数据库
+
+首次部署需要执行表结构初始化脚本 [server/deploy/postgres/init_schema.sql](server/deploy/postgres/init_schema.sql)：
+
+```bash
+podman exec -i nebula-postgres \
+    psql -U nebula -d nebula \
+    < server/deploy/postgres/init_schema.sql
+```
+
+可选验证：
+
+```bash
+podman exec -it nebula-postgres psql -U nebula -d nebula -c '\dt'
+```
+
+### 5. 配置运行时
+
+启动服务前需要设置数据库密码：
+
+```bash
+export NEBULA_DATABASE_PASSWORD='<your-strong-password>'
+```
+
+如果使用本文示例的本地演示数据库，可临时设为：
+
+```bash
+export NEBULA_DATABASE_PASSWORD=nebula
+```
+
+服务运行时使用以下默认路径：
+
+- 日志目录：`runtime/logs`
+- JWT 密钥文件：`runtime/secrets/jwt.key`
+- 文件存储目录：`runtime/files`
+
+关于 JWT 密钥文件：
+
+- 如果 `runtime/secrets/jwt.key` 不存在，服务在首次启动时会自动生成，文件内容为 Base64 编码后的随机密钥，服务启动时先解码再用于 JWT 签名。
+- 生产环境应妥善持久化和保护该文件。重新生成会导致已签发的令牌全部失效。
+- 如果手工提供该文件，请确保内容是合法的 Base64 编码密钥。
+
+### 6. 启动服务
+
+使用默认配置启动：
+
+```bash
+./server/build/release/bin/nebula
+```
+
+显式指定配置文件：
+
+```bash
+./server/build/release/bin/nebula --config server/config/server.toml
+```
+
+服务默认监听 `8080` 端口。
+
+### 7. 验证部署
+
+健康检查：
+
+```bash
+curl --noproxy '*' -i http://127.0.0.1:8080/healthz
+```
+
+预期返回：
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"status":"ok"}
+```
+
+## 运行测试
+
+如果希望在部署前完整验证，构建 Debug 版本并执行测试：
+
+```bash
+conan install server \
+    --output-folder=server/build/debug \
+    --build=missing \
+    -pr=server/conanprofile \
+    -s build_type=Debug
+
+cmake --preset debug
+cmake --build --preset debug --parallel
+ctest --preset debug
 ```
 
 说明：
 
-- 这条命令会执行全部已注册测试。
-- 数据库相关测试依赖 `NEBULA_TEST_DATABASE_*` 环境变量。
-- 如果这些环境变量未配置，数据库相关测试会直接失败，因此首次执行前应先完成下面的测试数据库准备和环境变量设置。
+- `ctest --preset debug` 会执行全部已注册测试。
+- 数据库相关测试依赖 `NEBULA_TEST_DATABASE_*` 环境变量，未配置时这些用例会直接失败。如需完整执行，请按下文准备独立的测试数据库。
 
-如果你希望连同数据库相关测试一起完整执行，建议准备一个独立测试库，不要复用部署库。
+### 准备测试数据库
 
-启动测试数据库：
+> 测试用例会执行 `TRUNCATE TABLE users RESTART IDENTITY`，因此**必须使用独立的测试数据库，不要复用生产数据库**。
+
+启动测试库（端口 `15432`，与生产实例隔离）：
 
 ```bash
 podman run -d \
@@ -59,15 +187,13 @@ podman run -d \
     docker.io/library/postgres:16
 ```
 
-等待数据库就绪：
+确认数据库就绪：
 
 ```bash
-until podman exec nebula-postgres-test pg_isready -U nebula -d nebula_test >/dev/null 2>&1; do
-    sleep 1
-done
+podman exec nebula-postgres-test pg_isready -U nebula -d nebula_test
 ```
 
-初始化测试库：
+初始化测试库表结构：
 
 ```bash
 podman exec -i nebula-postgres-test \
@@ -85,132 +211,20 @@ export NEBULA_TEST_DATABASE_USER=nebula
 export NEBULA_TEST_DATABASE_PASSWORD=nebula
 ```
 
-然后重新执行：
+重新执行：
 
 ```bash
-ctest --test-dir server/build --output-on-failure
+ctest --preset debug
 ```
 
-注意：数据库相关测试会执行 `TRUNCATE TABLE users RESTART IDENTITY`，因此测试库必须与部署库隔离。
+## 生产部署清单
 
-### 4. 准备 PostgreSQL
+正式部署前至少完成以下事项：
 
-默认配置文件 [server/config/server.toml](server/config/server.toml) 使用以下数据库参数：
-
-- `host=127.0.0.1`
-- `port=5432`
-- `name=nebula`
-- `user=nebula`
-- `password_env=NEBULA_DATABASE_PASSWORD`
-
-服务需要一个可访问的 PostgreSQL 实例。本文默认示例使用 `docker.io/library/postgres:16` 容器镜像。
-
-如果你希望直接按默认配置部署，可以先启动一个本地 PostgreSQL 容器：
-
-以下命令中的 `nebula` 仅用于本地演示。生产环境请替换为强密码，并同步更新后续环境变量。
-
-```bash
-podman run -d \
-    --name nebula-postgres \
-    -e POSTGRES_DB=nebula \
-    -e POSTGRES_USER=nebula \
-    -e POSTGRES_PASSWORD=nebula \
-    -p 5432:5432 \
-    -v nebula-pgdata:/var/lib/postgresql/data \
-    docker.io/library/postgres:16
-```
-
-等待数据库就绪：
-
-```bash
-until podman exec nebula-postgres pg_isready -U nebula -d nebula >/dev/null 2>&1; do
-    sleep 1
-done
-```
-
-### 5. 初始化数据库
-
-首次部署需要执行表结构初始化脚本 [server/deploy/postgres/init_schema.sql](server/deploy/postgres/init_schema.sql)：
-
-```bash
-podman exec -i nebula-postgres \
-    psql -U nebula -d nebula \
-    < server/deploy/postgres/init_schema.sql
-```
-
-可选验证：
-
-```bash
-podman exec -it nebula-postgres psql -U nebula -d nebula -c '\dt'
-```
-
-### 6. 配置运行时环境
-
-生产环境不要继续使用本文中的示例密码 `nebula`。正式部署前至少应完成以下替换：
-
-- PostgreSQL 用户密码改为强密码
-- `NEBULA_DATABASE_PASSWORD` 改为对应的新密码
-- 数据库不要直接暴露在默认示例账号和口令下
-
-启动服务前需要设置数据库密码环境变量：
-
-```bash
-export NEBULA_DATABASE_PASSWORD='<your-strong-password>'
-```
-
-如果你按本文的本地演示命令启动数据库，可以临时使用：
-
-```bash
-export NEBULA_DATABASE_PASSWORD=nebula
-```
-
-如果你使用自定义数据库实例，请同步修改 [server/config/server.toml](server/config/server.toml) 中的 `[database]` 配置，或准备一份新的配置文件并通过 `--config` 传入。
-
-服务默认还会使用以下运行时路径：
-
-- 日志目录：`runtime/logs`
-- JWT 密钥文件：`runtime/secrets/jwt.key`
-
-如果 `runtime/secrets/jwt.key` 不存在，服务会在首次启动时自动生成。文件中保存的是 Base64 编码后的随机密钥内容，服务启动时会先解码再用于 JWT 签名。生产环境应妥善持久化和保护该文件，避免因重新生成导致已签发令牌全部失效；如果手工提供该文件，请确保内容是合法的 Base64 编码密钥。
-
-### 7. 启动服务
-
-使用默认配置启动：
-
-```bash
-./server/build/bin/nebula
-```
-
-使用自定义配置文件启动：
-
-```bash
-./server/build/bin/nebula --config server/config/server.toml
-```
-
-默认监听端口为 `8080`。
-
-### 8. 验证部署结果
-
-健康检查：
-
-```bash
-curl --noproxy '*' -i http://127.0.0.1:8080/healthz
-```
-
-预期返回：
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{"status":"ok"}
-```
-
-根路径默认映射到 `/healthz`，因此也可以直接验证：
-
-```bash
-curl --noproxy '*' -i http://127.0.0.1:8080/
-```
+- 将 PostgreSQL 用户密码替换为强密码，并同步更新 `NEBULA_DATABASE_PASSWORD`
+- 不要在公网环境使用默认账号 `nebula`
+- 妥善持久化并备份 `runtime/secrets/jwt.key`，避免令牌失效
+- 关闭或限制测试库（端口 `15432`）对外暴露
 
 ## License
 

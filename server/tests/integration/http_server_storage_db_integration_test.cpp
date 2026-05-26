@@ -257,17 +257,17 @@ std::optional<std::int64_t> fetch_object_ref_count(const database::DatabaseConfi
     pqxx::connection connection(database::build_connection_info(config));
     pqxx::read_transaction tx(connection);
     const pqxx::result rows =
-        tx.exec_params("SELECT ref_count FROM storage_objects WHERE sha256 = $1 LIMIT 1", std::string(sha256));
+        tx.exec("SELECT ref_count FROM storage_objects WHERE sha256 = $1 LIMIT 1", pqxx::params{tx, sha256});
     if (rows.empty()) {
         return std::nullopt;
     }
-    return rows.front()[0].as<std::int64_t>(0);
+    return rows.one_row()[0].as<std::int64_t>(0);
 }
 
 std::int64_t fetch_object_count(const database::DatabaseConfig& config) {
     pqxx::connection connection(database::build_connection_info(config));
     pqxx::read_transaction tx(connection);
-    return tx.exec1("SELECT COUNT(*) FROM storage_objects")[0].as<std::int64_t>(0);
+    return tx.exec("SELECT COUNT(*) FROM storage_objects").one_row()[0].as<std::int64_t>(0);
 }
 
 struct StoredDownloadTicketRow {
@@ -288,14 +288,14 @@ std::optional<StoredDownloadTicketRow> fetch_download_ticket_row(const database:
                                                                  std::string_view ticket) {
     pqxx::connection connection(database::build_connection_info(config));
     pqxx::read_transaction tx(connection);
-    const pqxx::result rows = tx.exec_params(
-        "SELECT user_id, canonical_path, expires_at_s FROM storage_download_tickets WHERE ticket = $1 LIMIT 1",
-        std::string(ticket));
+    const pqxx::result rows =
+        tx.exec("SELECT user_id, canonical_path, expires_at_s FROM storage_download_tickets WHERE ticket = $1 LIMIT 1",
+                pqxx::params{tx, ticket});
     if (rows.empty()) {
         return std::nullopt;
     }
 
-    const pqxx::row row = rows.front();
+    const pqxx::row row(rows.one_row());
     return StoredDownloadTicketRow{
         .user_id = row[0].as<std::int64_t>(0),
         .canonical_path = row[1].as<std::string>(),
@@ -306,7 +306,7 @@ std::optional<StoredDownloadTicketRow> fetch_download_ticket_row(const database:
 std::int64_t fetch_download_ticket_count(const database::DatabaseConfig& config) {
     pqxx::connection connection(database::build_connection_info(config));
     pqxx::read_transaction tx(connection);
-    return tx.exec1("SELECT COUNT(*) FROM storage_download_tickets")[0].as<std::int64_t>(0);
+    return tx.exec("SELECT COUNT(*) FROM storage_download_tickets").one_row()[0].as<std::int64_t>(0);
 }
 
 template <typename Write>
@@ -443,53 +443,62 @@ void test_storage_node_schema_constraints() {
     {
         pqxx::connection connection(database::build_connection_info(config));
         pqxx::work tx(connection);
-        tx.exec_params(
-            "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
-            "VALUES($1, 5, $2, 0, 1000, 1000)",
-            sha256, object_rel_path);
-        tx.exec_params("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, 5, 1000)",
-                       std::string("/users/1/schema-valid-file.txt"), sha256);
-        tx.exec_params(
-            "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'directory', "
-            "NULL, NULL, 1000)",
-            std::string("/users/1/schema-valid-directory"));
+        tx.exec(
+              "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
+              "VALUES($1, 5, $2, 0, 1000, 1000)",
+              pqxx::params{tx, sha256, object_rel_path})
+            .no_rows();
+        tx.exec("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, 5, 1000)",
+                pqxx::params{tx, "/users/1/schema-valid-file.txt", sha256})
+            .no_rows();
+        tx.exec(
+              "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'directory', "
+              "NULL, NULL, 1000)",
+              pqxx::params{tx, "/users/1/schema-valid-directory"})
+            .no_rows();
         tx.commit();
     }
 
     expect_storage_node_write_rejected(
         config,
         [](pqxx::work& tx) {
-            tx.exec_params(
-                "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'symlink', "
-                "NULL, NULL, 1000)",
-                std::string("/users/1/schema-invalid-type"));
+            tx.exec(
+                  "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'symlink', "
+                  "NULL, NULL, 1000)",
+                  pqxx::params{tx, "/users/1/schema-invalid-type"})
+                .no_rows();
         },
         "unknown node_type should be rejected by schema");
     expect_storage_node_write_rejected(
         config,
         [](pqxx::work& tx) {
-            tx.exec_params(
-                "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'file', NULL, "
-                "5, 1000)",
-                std::string("/users/1/schema-file-missing-sha.txt"));
+            tx.exec(
+                  "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'file', "
+                  "NULL, "
+                  "5, 1000)",
+                  pqxx::params{tx, "/users/1/schema-file-missing-sha.txt"})
+                .no_rows();
         },
         "file node should reject missing sha");
     expect_storage_node_write_rejected(
         config,
         [&sha256](pqxx::work& tx) {
-            tx.exec_params(
-                "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'file', $2, "
-                "NULL, 1000)",
-                std::string("/users/1/schema-file-missing-size.txt"), sha256);
+            tx.exec(
+                  "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'file', $2, "
+                  "NULL, 1000)",
+                  pqxx::params{tx, "/users/1/schema-file-missing-size.txt", sha256})
+                .no_rows();
         },
         "file node should reject missing size");
     expect_storage_node_write_rejected(
         config,
         [&sha256](pqxx::work& tx) {
-            tx.exec_params(
-                "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, 'directory', "
-                "$2, 5, 1000)",
-                std::string("/users/1/schema-directory-with-file-fields"), sha256);
+            tx.exec(
+                  "INSERT INTO storage_nodes(path, node_type, sha256, size_bytes, updated_at_s) VALUES($1, "
+                  "'directory', "
+                  "$2, 5, 1000)",
+                  pqxx::params{tx, "/users/1/schema-directory-with-file-fields", sha256})
+                .no_rows();
         },
         "directory node should reject file fields");
 }
@@ -763,11 +772,12 @@ void test_storage_download_ticket_expired() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params(
-            "INSERT INTO storage_download_tickets(ticket, user_id, canonical_path, created_at_s, expires_at_s) "
-            "VALUES($1, $2, $3, $4, $5)",
-            std::string(nebula::common::kRandomHexToken128Chars, 'a'), std::int64_t{1}, path, std::int64_t{1000},
-            std::int64_t{1001});
+        tx.exec(
+              "INSERT INTO storage_download_tickets(ticket, user_id, canonical_path, created_at_s, expires_at_s) "
+              "VALUES($1, $2, $3, $4, $5)",
+              pqxx::params{tx, std::string(nebula::common::kRandomHexToken128Chars, 'a'), std::int64_t{1}, path,
+                           std::int64_t{1000}, std::int64_t{1001}})
+            .no_rows();
         tx.commit();
     }
 
@@ -1121,8 +1131,9 @@ void test_storage_gc_cleans_file_only_objects() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params("DELETE FROM storage_nodes WHERE path = $1", std::string("/users/1/gc/file-only-orphan.txt"));
-        tx.exec_params("DELETE FROM storage_objects WHERE sha256 = $1", *sha256);
+        tx.exec("DELETE FROM storage_nodes WHERE path = $1", pqxx::params{tx, "/users/1/gc/file-only-orphan.txt"})
+            .no_rows();
+        tx.exec("DELETE FROM storage_objects WHERE sha256 = $1", pqxx::params{tx, *sha256}).no_rows();
         tx.commit();
     }
     test::expect_equal(fetch_object_count(config.database), std::int64_t{0}, "object table should be empty before gc");
@@ -1199,7 +1210,8 @@ void test_storage_gc_cleans_orphan_temp_files() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params("DELETE FROM storage_upload_sessions WHERE upload_id = $1", std::string("deleted-temp-session"));
+        tx.exec("DELETE FROM storage_upload_sessions WHERE upload_id = $1", pqxx::params{tx, "deleted-temp-session"})
+            .no_rows();
         tx.commit();
     }
 
@@ -1240,13 +1252,14 @@ void test_storage_gc_cleans_expired_download_tickets() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params(
-            "INSERT INTO storage_download_tickets(ticket, user_id, canonical_path, created_at_s, expires_at_s) "
-            "VALUES($1, $2, $3, $4, $5), ($6, $7, $8, $9, $10)",
-            std::string(nebula::common::kRandomHexToken128Chars, 'a'), std::int64_t{1},
-            std::string("/docs/expired-a.txt"), std::int64_t{1000}, std::int64_t{1001},
-            std::string(nebula::common::kRandomHexToken128Chars, 'b'), std::int64_t{1},
-            std::string("/docs/expired-b.txt"), std::int64_t{1000}, std::int64_t{1002});
+        tx.exec(
+              "INSERT INTO storage_download_tickets(ticket, user_id, canonical_path, created_at_s, expires_at_s) "
+              "VALUES($1, $2, $3, $4, $5), ($6, $7, $8, $9, $10)",
+              pqxx::params{tx, std::string(nebula::common::kRandomHexToken128Chars, 'a'), std::int64_t{1},
+                           "/docs/expired-a.txt", std::int64_t{1000}, std::int64_t{1001},
+                           std::string(nebula::common::kRandomHexToken128Chars, 'b'), std::int64_t{1},
+                           "/docs/expired-b.txt", std::int64_t{1000}, std::int64_t{1002}})
+            .no_rows();
         tx.commit();
     }
     test::expect_equal(fetch_download_ticket_count(config.database), std::int64_t{2},
@@ -1288,13 +1301,17 @@ void test_storage_temp_cleanup_waits_for_pending_session_reference() {
 
     pqxx::connection blocker_connection(database::build_connection_info(config.database));
     pqxx::work blocker_tx(blocker_connection);
-    blocker_tx.exec_params("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
-                           std::format("storage_temp:{}", temp_rel_path));
-    blocker_tx.exec_params(
-        "INSERT INTO storage_upload_sessions(upload_id, path, temp_rel_path, total_chunks, next_chunk_index, "
-        "temp_size_bytes, created_at_s, updated_at_s) VALUES($1, $2, $3, 1, 0, $4, $5, $5)",
-        std::string("pending-temp-session"), std::string("/users/1/pending-temp.txt"), temp_rel_path, std::int64_t{4},
-        std::int64_t{1000});
+    blocker_tx
+        .exec("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
+              pqxx::params{blocker_tx, std::format("storage_temp:{}", temp_rel_path)})
+        .one_row();
+    blocker_tx
+        .exec(
+            "INSERT INTO storage_upload_sessions(upload_id, path, temp_rel_path, total_chunks, next_chunk_index, "
+            "temp_size_bytes, created_at_s, updated_at_s) VALUES($1, $2, $3, 1, 0, $4, $5, $5)",
+            pqxx::params{blocker_tx, "pending-temp-session", "/users/1/pending-temp.txt", temp_rel_path,
+                         std::int64_t{4}, std::int64_t{1000}})
+        .no_rows();
 
     auto cleanup_future =
         std::async(std::launch::async, [&repository, &object_store, &temp_abs_path, &temp_rel_path]() {
@@ -1357,20 +1374,28 @@ void test_storage_unreferenced_cleanup_avoids_resurrection_race() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params(
-            "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
-            "VALUES($1, $2, $3, 0, $4, $4)",
-            sha256, std::int64_t{4}, object_rel_path, std::int64_t{1000});
+        tx.exec(
+              "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
+              "VALUES($1, $2, $3, 0, $4, $4)",
+              pqxx::params{tx, sha256, std::int64_t{4}, object_rel_path, std::int64_t{1000}})
+            .no_rows();
         tx.commit();
     }
 
     pqxx::connection blocker_connection(database::build_connection_info(config.database));
     pqxx::work blocker_tx(blocker_connection);
-    blocker_tx.exec_params("SELECT pg_advisory_xact_lock_shared($1)",
-                           nebula::storage::kGlobalStorageObjectGcAdvisoryLockKey);
-    blocker_tx.exec_params("UPDATE storage_objects SET ref_count = 1, updated_at_s = 1001 WHERE sha256 = $1", sha256);
-    blocker_tx.exec_params("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, $4)",
-                           std::string("/users/1/race.txt"), sha256, std::int64_t{4}, std::int64_t{1001});
+    blocker_tx
+        .exec("SELECT pg_advisory_xact_lock_shared($1)",
+              pqxx::params{blocker_tx, nebula::storage::kGlobalStorageObjectGcAdvisoryLockKey})
+        .one_row();
+    blocker_tx
+        .exec("UPDATE storage_objects SET ref_count = 1, updated_at_s = 1001 WHERE sha256 = $1",
+              pqxx::params{blocker_tx, sha256})
+        .no_rows();
+    blocker_tx
+        .exec("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, $4)",
+              pqxx::params{blocker_tx, "/users/1/race.txt", sha256, std::int64_t{4}, std::int64_t{1001}})
+        .no_rows();
 
     auto cleanup_future = std::async(std::launch::async, [&repository, &object_store, &sha256, &route_config]() {
         repository.cleanup_unreferenced_object(sha256, [&object_store, &route_config](std::string_view rel_path) {
@@ -1422,14 +1447,20 @@ void test_storage_upload_failure_cleanup_waits_for_pending_reference() {
 
     pqxx::connection blocker_connection(database::build_connection_info(config.database));
     pqxx::work blocker_tx(blocker_connection);
-    blocker_tx.exec_params("SELECT pg_advisory_xact_lock_shared($1)",
-                           nebula::storage::kGlobalStorageObjectGcAdvisoryLockKey);
-    blocker_tx.exec_params(
-        "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
-        "VALUES($1, $2, $3, 1, $4, $4)",
-        sha256, std::int64_t{4}, object_rel_path, std::int64_t{1000});
-    blocker_tx.exec_params("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, $4)",
-                           std::string("/users/1/pending-reference.txt"), sha256, std::int64_t{4}, std::int64_t{1000});
+    blocker_tx
+        .exec("SELECT pg_advisory_xact_lock_shared($1)",
+              pqxx::params{blocker_tx, nebula::storage::kGlobalStorageObjectGcAdvisoryLockKey})
+        .one_row();
+    blocker_tx
+        .exec(
+            "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
+            "VALUES($1, $2, $3, 1, $4, $4)",
+            pqxx::params{blocker_tx, sha256, std::int64_t{4}, object_rel_path, std::int64_t{1000}})
+        .no_rows();
+    blocker_tx
+        .exec("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, $4)",
+              pqxx::params{blocker_tx, "/users/1/pending-reference.txt", sha256, std::int64_t{4}, std::int64_t{1000}})
+        .no_rows();
 
     auto cleanup_future = std::async(std::launch::async, [&repository, &object_store, &sha256, &object_abs_path]() {
         repository.cleanup_upload_failure_object(
@@ -1481,15 +1512,21 @@ void test_storage_file_only_object_cleanup_waits_for_pending_reference() {
 
     pqxx::connection blocker_connection(database::build_connection_info(config.database));
     pqxx::work blocker_tx(blocker_connection);
-    blocker_tx.exec_params("SELECT pg_advisory_xact_lock_shared($1)",
-                           nebula::storage::kGlobalStorageObjectGcAdvisoryLockKey);
-    blocker_tx.exec_params(
-        "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
-        "VALUES($1, $2, $3, 1, $4, $4)",
-        sha256, std::int64_t{4}, object_rel_path, std::int64_t{1000});
-    blocker_tx.exec_params("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, $4)",
-                           std::string("/users/1/file-only-pending-reference.txt"), sha256, std::int64_t{4},
-                           std::int64_t{1000});
+    blocker_tx
+        .exec("SELECT pg_advisory_xact_lock_shared($1)",
+              pqxx::params{blocker_tx, nebula::storage::kGlobalStorageObjectGcAdvisoryLockKey})
+        .one_row();
+    blocker_tx
+        .exec(
+            "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
+            "VALUES($1, $2, $3, 1, $4, $4)",
+            pqxx::params{blocker_tx, sha256, std::int64_t{4}, object_rel_path, std::int64_t{1000}})
+        .no_rows();
+    blocker_tx
+        .exec("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, $4)",
+              pqxx::params{blocker_tx, "/users/1/file-only-pending-reference.txt", sha256, std::int64_t{4},
+                           std::int64_t{1000}})
+        .no_rows();
 
     auto cleanup_future =
         std::async(std::launch::async, [&repository, &object_store, &object_rel_path, &object_abs_path]() {
@@ -1545,12 +1582,15 @@ void test_storage_tree_sorting_and_updated_at() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1", std::string("/users/1/dir/sub"),
-                       std::int64_t{1001});
-        tx.exec_params("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1", std::string("/users/1/dir/a.txt"),
-                       std::int64_t{1002});
-        tx.exec_params("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1", std::string("/users/1/dir/b.txt"),
-                       std::int64_t{1003});
+        tx.exec("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
+                pqxx::params{tx, "/users/1/dir/sub", std::int64_t{1001}})
+            .no_rows();
+        tx.exec("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
+                pqxx::params{tx, "/users/1/dir/a.txt", std::int64_t{1002}})
+            .no_rows();
+        tx.exec("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
+                pqxx::params{tx, "/users/1/dir/b.txt", std::int64_t{1003}})
+            .no_rows();
         tx.commit();
     }
 
@@ -1887,7 +1927,8 @@ void test_storage_rejects_file_directory_path_collisions() {
     pqxx::connection connection(database::build_connection_info(config.database));
     pqxx::read_transaction tx(connection);
     const auto race_node_count =
-        tx.exec_params("SELECT COUNT(*) FROM storage_nodes WHERE path = $1", std::string("/users/1/race"))[0][0]
+        tx.exec("SELECT COUNT(*) FROM storage_nodes WHERE path = $1", pqxx::params{tx, "/users/1/race"})
+            .one_row()[0]
             .as<std::int64_t>(0);
     test::expect_equal(race_node_count, std::int64_t{1},
                        "concurrent file/directory race should leave one tree node at the path");
@@ -1921,12 +1962,15 @@ void test_storage_recent_and_usage_endpoints() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
-                       std::string("/users/1/assets/photo.png"), std::int64_t{1003});
-        tx.exec_params("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
-                       std::string("/users/1/docs/report.pdf"), std::int64_t{1002});
-        tx.exec_params("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
-                       std::string("/users/1/code/main.ts"), std::int64_t{1001});
+        tx.exec("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
+                pqxx::params{tx, "/users/1/assets/photo.png", std::int64_t{1003}})
+            .no_rows();
+        tx.exec("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
+                pqxx::params{tx, "/users/1/docs/report.pdf", std::int64_t{1002}})
+            .no_rows();
+        tx.exec("UPDATE storage_nodes SET updated_at_s = $2 WHERE path = $1",
+                pqxx::params{tx, "/users/1/code/main.ts", std::int64_t{1001}})
+            .no_rows();
         tx.commit();
     }
 
@@ -2001,8 +2045,8 @@ void test_storage_upload_rejects_user_quota_overflow() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params("UPDATE users SET quota_bytes = $2 WHERE user_id = $1::bigint", std::string("1"),
-                       std::int64_t{5});
+        tx.exec("UPDATE users SET quota_bytes = $2 WHERE user_id = $1::bigint", pqxx::params{tx, "1", std::int64_t{5}})
+            .no_rows();
         tx.commit();
     }
 
@@ -2059,19 +2103,24 @@ void test_storage_usage_clamps_int64_overflow() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params("UPDATE users SET quota_bytes = $2 WHERE user_id = $1::bigint", std::string("1"), max_i64);
-        tx.exec_params(
-            "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
-            "VALUES($1, $2, $3, 1, 1000, 1000)",
-            first_sha, first_size, first_object_rel_path);
-        tx.exec_params(
-            "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
-            "VALUES($1, $2, $3, 1, 1000, 1000)",
-            second_sha, second_size, second_object_rel_path);
-        tx.exec_params("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, 1000)",
-                       std::string("/users/1/overflow-a.bin"), first_sha, first_size);
-        tx.exec_params("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, 1000)",
-                       std::string("/users/1/overflow-b.bin"), second_sha, second_size);
+        tx.exec("UPDATE users SET quota_bytes = $2 WHERE user_id = $1::bigint", pqxx::params{tx, "1", max_i64})
+            .no_rows();
+        tx.exec(
+              "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
+              "VALUES($1, $2, $3, 1, 1000, 1000)",
+              pqxx::params{tx, first_sha, first_size, first_object_rel_path})
+            .no_rows();
+        tx.exec(
+              "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
+              "VALUES($1, $2, $3, 1, 1000, 1000)",
+              pqxx::params{tx, second_sha, second_size, second_object_rel_path})
+            .no_rows();
+        tx.exec("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, 1000)",
+                pqxx::params{tx, "/users/1/overflow-a.bin", first_sha, first_size})
+            .no_rows();
+        tx.exec("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, 1000)",
+                pqxx::params{tx, "/users/1/overflow-b.bin", second_sha, second_size})
+            .no_rows();
         tx.commit();
     }
 
@@ -2162,12 +2211,14 @@ void test_storage_rejects_files_above_size_limit() {
     {
         pqxx::connection connection(database::build_connection_info(config.database));
         pqxx::work tx(connection);
-        tx.exec_params(
-            "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
-            "VALUES($1, $2, $3, 1, 1000, 1000)",
-            sha256, std::int64_t{5}, object_rel_path);
-        tx.exec_params("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, 1000)",
-                       std::string("/users/1/manual-too-large.bin"), sha256, std::int64_t{5});
+        tx.exec(
+              "INSERT INTO storage_objects(sha256, size_bytes, object_rel_path, ref_count, created_at_s, updated_at_s) "
+              "VALUES($1, $2, $3, 1, 1000, 1000)",
+              pqxx::params{tx, sha256, std::int64_t{5}, object_rel_path})
+            .no_rows();
+        tx.exec("INSERT INTO storage_nodes(path, sha256, size_bytes, updated_at_s) VALUES($1, $2, $3, 1000)",
+                pqxx::params{tx, "/users/1/manual-too-large.bin", sha256, std::int64_t{5}})
+            .no_rows();
         tx.commit();
     }
 

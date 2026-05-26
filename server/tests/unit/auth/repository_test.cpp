@@ -22,11 +22,16 @@ std::optional<std::int64_t> fetch_user_quota_bytes(const database::DatabaseConfi
     pqxx::connection connection(database::build_connection_info(config));
     pqxx::read_transaction tx(connection);
     const pqxx::result rows =
-        tx.exec_params("SELECT quota_bytes FROM users WHERE user_id = $1::bigint LIMIT 1", user_id);
-    if (rows.empty() || rows.front()[0].is_null()) {
+        tx.exec("SELECT quota_bytes FROM users WHERE user_id = $1::bigint LIMIT 1", pqxx::params{tx, user_id});
+    if (rows.empty()) {
         return std::nullopt;
     }
-    return rows.front()[0].as<std::int64_t>(0);
+
+    const pqxx::row row(rows.one_row());
+    if (row[0].is_null()) {
+        return std::nullopt;
+    }
+    return row[0].as<std::int64_t>(0);
 }
 
 std::string make_base64url_blob(std::size_t size_bytes, std::byte fill_byte) {

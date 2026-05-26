@@ -28,10 +28,10 @@ void test_redact_request_line_keeps_absolute_form_request() {
 }
 
 void test_redact_request_line_redacts_origin_form_download_ticket() {
-    test::expect_equal(nebula::http::redact_request_line(
-                           "GET /api/storage/downloads/0123456789abcdef?download=1 HTTP/1.1"),
-                       std::string("GET /api/storage/downloads/{download_ticket}?download=1 HTTP/1.1"),
-                       "origin-form request line should redact download ticket");
+    test::expect_equal(
+        nebula::http::redact_request_line("GET /api/storage/downloads/0123456789abcdef?download=1 HTTP/1.1"),
+        std::string("GET /api/storage/downloads/{download_ticket}?download=1 HTTP/1.1"),
+        "origin-form request line should redact download ticket");
 }
 
 void test_redact_request_line_redacts_absolute_form_download_ticket() {

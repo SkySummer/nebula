@@ -1,0 +1,55 @@
+{
+    "version": 4,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 20,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "release",
+            "displayName": "Release",
+            "description": "Configure a Release build with Conan-generated toolchain",
+            "generator": "Unix Makefiles",
+            "binaryDir": "${fileDir}/server/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_TOOLCHAIN_FILE": "${fileDir}/server/build/release/conan_toolchain.cmake",
+                "NEBULA_BUILD_TESTING": "OFF"
+            }
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "description": "Configure a Debug build with Conan-generated toolchain",
+            "generator": "Unix Makefiles",
+            "binaryDir": "${fileDir}/server/build/debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_TOOLCHAIN_FILE": "${fileDir}/server/build/debug/conan_toolchain.cmake",
+                "NEBULA_BUILD_TESTING": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}

@@ -55,84 +55,83 @@ namespace {
 }  // namespace
 
 void execute_ensure_user_root_directory(pqxx::work& tx, std::int64_t user_id, std::int64_t now_s) {
-    tx.exec_params(std::string(kEnsureUserRootDirectorySql), user_root_path(user_id), now_s);
+    tx.exec(kEnsureUserRootDirectorySql, pqxx::params{tx, user_root_path(user_id), now_s}).no_rows();
 }
 
 pqxx::result execute_find_node_type_for_update(pqxx::work& tx, std::string_view path) {
-    return tx.exec_params(std::string(kFindStorageNodeTypeForUpdateSql), std::string(path));
+    return tx.exec(kFindStorageNodeTypeForUpdateSql, pqxx::params{tx, path});
 }
 
 pqxx::result execute_find_storage_node_descendant(pqxx::work& tx, std::string_view path) {
-    return tx.exec_params(std::string(kFindStorageNodeDescendantSql), build_prefix_like_pattern(path));
+    return tx.exec(kFindStorageNodeDescendantSql, pqxx::params{tx, build_prefix_like_pattern(path)});
 }
 
 pqxx::result execute_find_user_quota_bytes(pqxx::transaction_base& tx, std::int64_t user_id) {
-    return tx.exec_params(std::string(kFindUserQuotaBytesSql), user_id);
+    return tx.exec(kFindUserQuotaBytesSql, pqxx::params{tx, user_id});
 }
 
 pqxx::row execute_sum_user_file_bytes(pqxx::transaction_base& tx, std::int64_t user_id) {
-    return tx.exec_params1(std::string(kSumUserFileBytesSql), build_prefix_like_pattern(user_storage_prefix(user_id)));
+    return tx.exec(kSumUserFileBytesSql, pqxx::params{tx, build_prefix_like_pattern(user_storage_prefix(user_id))})
+        .one_row();
 }
 
 pqxx::result execute_find_existing_file_target_for_update(pqxx::work& tx, std::string_view path) {
-    return tx.exec_params(std::string(kFindExistingFileTargetForUpdateSql), std::string(path));
+    return tx.exec(kFindExistingFileTargetForUpdateSql, pqxx::params{tx, path});
 }
 
 pqxx::result execute_find_file_node(pqxx::read_transaction& tx, std::string_view path) {
-    return tx.exec_params(std::string(kFindFileNodeSql), std::string(path));
+    return tx.exec(kFindFileNodeSql, pqxx::params{tx, path});
 }
 
 void execute_insert_directory_node(pqxx::work& tx, std::string_view scoped_path, std::int64_t now_s) {
-    tx.exec_params(std::string(kInsertDirectoryNodeSql), std::string(scoped_path), now_s);
+    tx.exec(kInsertDirectoryNodeSql, pqxx::params{tx, scoped_path, now_s}).no_rows();
 }
 
 pqxx::result execute_list_directory_children(pqxx::work& tx, std::string_view scoped_path,
                                              const DirectoryListOptions& options) {
-    return tx.exec_params(build_list_directory_children_sql(options),
-                          build_prefix_like_pattern(std::format("{}/", scoped_path)));
+    return tx.exec(build_list_directory_children_sql(options),
+                   pqxx::params{tx, build_prefix_like_pattern(std::format("{}/", scoped_path))});
 }
 
 pqxx::result execute_list_recent_files(pqxx::work& tx, std::int64_t user_id, std::int64_t limit) {
-    return tx.exec_params(std::string(kListRecentFilesSql), build_prefix_like_pattern(user_storage_prefix(user_id)),
-                          limit);
+    return tx.exec(kListRecentFilesSql,
+                   pqxx::params{tx, build_prefix_like_pattern(user_storage_prefix(user_id)), limit});
 }
 
 pqxx::result execute_list_storage_usage_files(pqxx::work& tx, std::int64_t user_id) {
-    return tx.exec_params(std::string(kListStorageUsageFilesSql),
-                          build_prefix_like_pattern(user_storage_prefix(user_id)));
+    return tx.exec(kListStorageUsageFilesSql,
+                   pqxx::params{tx, build_prefix_like_pattern(user_storage_prefix(user_id))});
 }
 
 void execute_upsert_storage_object(pqxx::work& tx, std::string_view sha256, std::int64_t size_bytes,
                                    std::string_view object_rel_path, std::int64_t now_s) {
-    tx.exec_params(std::string(kUpsertStorageObjectSql), std::string(sha256), size_bytes, std::string(object_rel_path),
-                   now_s);
+    tx.exec(kUpsertStorageObjectSql, pqxx::params{tx, sha256, size_bytes, object_rel_path, now_s}).no_rows();
 }
 
 void execute_insert_file_node(pqxx::work& tx, std::string_view path, std::string_view sha256, std::int64_t size_bytes,
                               std::int64_t now_s) {
-    tx.exec_params(std::string(kInsertFileNodeSql), std::string(path), std::string(sha256), size_bytes, now_s);
+    tx.exec(kInsertFileNodeSql, pqxx::params{tx, path, sha256, size_bytes, now_s}).no_rows();
 }
 
 void execute_update_file_node_with_object(pqxx::work& tx, std::string_view path, std::string_view sha256,
                                           std::int64_t size_bytes, std::int64_t now_s) {
-    tx.exec_params(std::string(kUpdateFileNodeWithObjectSql), std::string(path), std::string(sha256), size_bytes,
-                   now_s);
+    tx.exec(kUpdateFileNodeWithObjectSql, pqxx::params{tx, path, sha256, size_bytes, now_s}).no_rows();
 }
 
 void execute_update_file_node_size(pqxx::work& tx, std::string_view path, std::int64_t size_bytes, std::int64_t now_s) {
-    tx.exec_params(std::string(kUpdateFileNodeSizeSql), std::string(path), size_bytes, now_s);
+    tx.exec(kUpdateFileNodeSizeSql, pqxx::params{tx, path, size_bytes, now_s}).no_rows();
 }
 
 pqxx::result execute_decrement_storage_object_ref_count(pqxx::work& tx, std::string_view sha256, std::int64_t now_s) {
-    return tx.exec_params(std::string(kDecrementStorageObjectRefCountSql), std::string(sha256), now_s);
+    return tx.exec(kDecrementStorageObjectRefCountSql, pqxx::params{tx, sha256, now_s});
 }
 
 pqxx::result execute_find_node_for_delete(pqxx::work& tx, std::string_view scoped_path) {
-    return tx.exec_params(std::string(kFindNodeForDeleteSql), std::string(scoped_path));
+    return tx.exec(kFindNodeForDeleteSql, pqxx::params{tx, scoped_path});
 }
 
 void execute_delete_node(pqxx::work& tx, std::string_view scoped_path) {
-    tx.exec_params(std::string(kDeleteNodeSql), std::string(scoped_path));
+    tx.exec(kDeleteNodeSql, pqxx::params{tx, scoped_path}).no_rows();
 }
 
 }  // namespace nebula::storage

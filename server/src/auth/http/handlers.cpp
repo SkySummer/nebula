@@ -10,8 +10,8 @@
 #include "nebula/common/base/string.hpp"
 #include "nebula/common/codec/json.hpp"
 #include "nebula/common/log/logger.hpp"
-#include "nebula/http/redaction/request_redaction.hpp"
 #include "nebula/http/codec/response_writer.hpp"
+#include "nebula/http/redaction/request_redaction.hpp"
 
 namespace nebula::auth {
 

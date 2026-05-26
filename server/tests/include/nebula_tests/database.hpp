@@ -108,9 +108,10 @@ inline void truncate_database_tables(const ::nebula::database::DatabaseConfig& c
     pqxx::connection connection(::nebula::database::build_connection_info(config));
     pqxx::work tx(connection);
     tx.exec(
-        "TRUNCATE TABLE storage_nodes, storage_upload_sessions, storage_objects, storage_download_tickets, users "
-        "RESTART IDENTITY");
-    tx.exec("ALTER SEQUENCE users_user_id_seq RESTART WITH 1");
+          "TRUNCATE TABLE storage_nodes, storage_upload_sessions, storage_objects, storage_download_tickets, users "
+          "RESTART IDENTITY")
+        .no_rows();
+    tx.exec("ALTER SEQUENCE users_user_id_seq RESTART WITH 1").no_rows();
     tx.commit();
 }
 

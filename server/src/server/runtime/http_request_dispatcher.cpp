@@ -10,8 +10,8 @@
 #include "nebula/auth/http/authentication.hpp"
 #include "nebula/auth/http/responses.hpp"
 #include "nebula/common/log/logger.hpp"
-#include "nebula/http/redaction/request_redaction.hpp"
 #include "nebula/http/codec/response_writer.hpp"
+#include "nebula/http/redaction/request_redaction.hpp"
 #include "nebula/http/routing/router.hpp"
 
 namespace nebula::server {

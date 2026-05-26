@@ -100,7 +100,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<StorageNodeType> node_type = parse_node_type_row(rows.front());
+    const std::optional<StorageNodeType> node_type = parse_node_type_row(rows.one_row());
     if (!node_type.has_value()) {
         throw std::runtime_error("storage_node_type_missing");
     }
@@ -134,7 +134,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<std::int64_t> quota_bytes = parse_quota_bytes_row(rows.front());
+    const std::optional<std::int64_t> quota_bytes = parse_quota_bytes_row(rows.one_row());
     if (!quota_bytes.has_value() || *quota_bytes <= 0) {
         return std::nullopt;
     }
@@ -175,7 +175,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return {ExistingFileTargetStatus::Ready, ExistingFileTargetState{}};
     }
 
-    const std::optional<ExistingFileTargetRow> parsed = parse_existing_file_target_row(rows.front());
+    const std::optional<ExistingFileTargetRow> parsed = parse_existing_file_target_row(rows.one_row());
     if (!parsed.has_value()) {
         return {ExistingFileTargetStatus::InternalError, ExistingFileTargetState{}};
     }
@@ -200,7 +200,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<UploadSessionChunkRow> parsed = parse_upload_session_chunk_row(rows.front());
+    const std::optional<UploadSessionChunkRow> parsed = parse_upload_session_chunk_row(rows.one_row());
     if (!parsed.has_value()) {
         throw std::runtime_error("upload_session_row_invalid");
     }
@@ -214,7 +214,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<UploadSessionChunkRow> parsed = parse_upload_session_chunk_row(rows.front());
+    const std::optional<UploadSessionChunkRow> parsed = parse_upload_session_chunk_row(rows.one_row());
     if (!parsed.has_value()) {
         throw std::runtime_error("upload_session_row_invalid");
     }
@@ -228,7 +228,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<UploadSessionFinalizeRow> parsed = parse_upload_session_finalize_row(rows.front());
+    const std::optional<UploadSessionFinalizeRow> parsed = parse_upload_session_finalize_row(rows.one_row());
     if (!parsed.has_value()) {
         throw std::runtime_error("upload_session_row_invalid");
     }
@@ -242,7 +242,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<NodeDeleteRow> parsed = parse_node_delete_row(rows.front());
+    const std::optional<NodeDeleteRow> parsed = parse_node_delete_row(rows.one_row());
     if (!parsed.has_value()) {
         throw std::runtime_error("storage_node_row_invalid");
     }
@@ -256,7 +256,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<DownloadTicketRow> parsed = parse_download_ticket_row(rows.front());
+    const std::optional<DownloadTicketRow> parsed = parse_download_ticket_row(rows.one_row());
     if (!parsed.has_value()) {
         throw std::runtime_error("download_ticket_row_invalid");
     }
@@ -270,7 +270,7 @@ void ensure_user_root_directory_in_tx(pqxx::work& tx, std::int64_t user_id, std:
         return std::nullopt;
     }
 
-    const std::optional<UnreferencedObjectCleanupRow> parsed = parse_unreferenced_object_cleanup_row(rows.front());
+    const std::optional<UnreferencedObjectCleanupRow> parsed = parse_unreferenced_object_cleanup_row(rows.one_row());
     if (!parsed.has_value()) {
         throw std::runtime_error("storage_object_row_invalid");
     }
@@ -366,7 +366,7 @@ std::expected<UploadCompleteFinalizeInfo, StorageError> finalize_upload_complete
         const pqxx::result old_object_rows =
             execute_decrement_storage_object_ref_count(tx, existing_target.old_sha, now_s.count());
         if (!old_object_rows.empty()) {
-            const std::optional<std::int64_t> ref_count = parse_storage_object_ref_count_row(old_object_rows.front());
+            const std::optional<std::int64_t> ref_count = parse_storage_object_ref_count_row(old_object_rows.one_row());
             if (ref_count.has_value() && *ref_count <= 0) {
                 cleanup_old_sha = existing_target.old_sha;
             }
@@ -422,6 +422,13 @@ bool StorageRepository::check_schema_ready() {
             .field("error", "unknown_status")
             .field("decision", "return_not_ready");
         return false;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("storage repository readiness check failed")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_not_ready");
+        return false;
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("storage repository readiness check failed")
@@ -444,6 +451,14 @@ bool StorageRepository::ensure_user_root_directory(std::int64_t user_id) {
         ensure_user_root_directory_in_tx(tx, user_id, now_s.count());
         tx.commit();
         return true;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("ensure user root directory failed")
+            .field("user_id", user_id)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return false;
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("ensure user root directory failed")
@@ -467,7 +482,7 @@ std::expected<FileNodeRecord, StorageError> StorageRepository::find_file_node(st
             return std::unexpected(StorageError::PathNotFound);
         }
 
-        const std::optional<FileNodeLookupRow> parsed = parse_file_node_lookup_row(rows.front());
+        const std::optional<FileNodeLookupRow> parsed = parse_file_node_lookup_row(rows.one_row());
         if (!parsed.has_value()) {
             throw std::runtime_error("file_node_row_invalid");
         }
@@ -490,6 +505,14 @@ std::expected<FileNodeRecord, StorageError> StorageRepository::find_file_node(st
             .object_rel_path = *parsed->object_rel_path,
         };
         return node;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("find file node failed")
+            .field("path", path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("find file node failed")
@@ -536,6 +559,15 @@ std::expected<void, StorageError> StorageRepository::create_directory_node(std::
         execute_insert_directory_node(tx, scoped_path, now_s.count());
         tx.commit();
         return {};
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("create directory node failed")
+            .field("user_id", user_id)
+            .field("path", scoped_path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("create directory node failed")
@@ -576,7 +608,7 @@ std::expected<std::vector<TreeItem>, StorageError> StorageRepository::list_direc
         std::unordered_map<std::string, std::int64_t> file_count_by_directory;
         file_count_by_directory.reserve(rows.size());
         for (const auto& row : rows) {
-            const std::optional<DirectoryChildRow> parsed = parse_directory_child_row(row);
+            const std::optional<DirectoryChildRow> parsed = parse_directory_child_row(pqxx::row(row));
             if (!parsed.has_value()) {
                 throw std::runtime_error("directory_child_row_invalid");
             }
@@ -620,6 +652,15 @@ std::expected<std::vector<TreeItem>, StorageError> StorageRepository::list_direc
 
         tx.commit();
         return items;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("list directory children failed")
+            .field("user_id", user_id)
+            .field("path", scoped_path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("list directory children failed")
@@ -649,7 +690,7 @@ std::expected<std::vector<RecentFileItem>, StorageError> StorageRepository::list
         std::vector<RecentFileItem> items;
         items.reserve(rows.size());
         for (const auto& row : rows) {
-            const std::optional<RecentFileItem> item = parse_recent_file_row(row);
+            const std::optional<RecentFileItem> item = parse_recent_file_row(pqxx::row(row));
             if (!item.has_value()) {
                 throw std::runtime_error("recent_file_row_invalid");
             }
@@ -658,6 +699,15 @@ std::expected<std::vector<RecentFileItem>, StorageError> StorageRepository::list
 
         tx.commit();
         return items;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("list recent files failed")
+            .field("user_id", user_id)
+            .field("limit", limit)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("list recent files failed")
@@ -696,7 +746,7 @@ std::expected<StorageUsageInfo, StorageError> StorageRepository::collect_storage
         std::vector<StorageUsageFileItem> items;
         items.reserve(rows.size());
         for (const auto& row : rows) {
-            const std::optional<StorageUsageFileItem> item = parse_storage_usage_file_row(row);
+            const std::optional<StorageUsageFileItem> item = parse_storage_usage_file_row(pqxx::row(row));
             if (!item.has_value()) {
                 throw std::runtime_error("storage_usage_row_invalid");
             }
@@ -705,6 +755,14 @@ std::expected<StorageUsageInfo, StorageError> StorageRepository::collect_storage
 
         tx.commit();
         return StorageUsageInfo{.quota_bytes = *quota_bytes, .items = std::move(items)};
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("collect storage usage failed")
+            .field("user_id", user_id)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("collect storage usage failed")
@@ -752,6 +810,15 @@ std::expected<void, StorageError> StorageRepository::create_upload_session(const
         }
         tx.commit();
         return {};
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("create upload session failed")
+            .field("upload_id", session.upload_id)
+            .field("path", session.path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("create upload session failed")
@@ -835,7 +902,7 @@ std::expected<UploadChunkAppendInfo, StorageError> StorageRepository::append_upl
         if (updated.empty()) {
             throw std::runtime_error("upload_session_update_missing");
         }
-        const std::optional<std::int64_t> next_chunk_index_value = parse_next_chunk_index_row(updated.front());
+        const std::optional<std::int64_t> next_chunk_index_value = parse_next_chunk_index_row(updated.one_row());
         if (!next_chunk_index_value.has_value()) {
             throw std::runtime_error("upload_session_update_invalid");
         }
@@ -846,6 +913,24 @@ std::expected<UploadChunkAppendInfo, StorageError> StorageRepository::append_upl
             .total_chunks = session->total_chunks,
             .next_chunk_index = *next_chunk_index_value,
         };
+    } catch (const pqxx::sql_error& e) {
+        if (file_appended && !temp_abs_path.empty() && !restore_chunk_file(temp_abs_path, committed_size_bytes)) {
+            common::Logger::instance()
+                .warn("upload temp file restore failed")
+                .field("upload_id", upload_id)
+                .field("chunk_index", chunk_index)
+                .field("path", temp_abs_path)
+                .field("error", "restore_failed")
+                .field("decision", "retry_on_next_chunk_upload");
+        }
+        common::Logger::instance()
+            .error("append upload chunk failed")
+            .field("upload_id", upload_id)
+            .field("chunk_index", chunk_index)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         if (file_appended && !temp_abs_path.empty() && !restore_chunk_file(temp_abs_path, committed_size_bytes)) {
             common::Logger::instance()
@@ -899,6 +984,14 @@ std::expected<UploadCompletePrepareInfo, StorageError> StorageRepository::prepar
             .temp_rel_path = session->temp_rel_path,
             .temp_size_bytes = *session->temp_size_bytes,
         };
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("prepare upload complete failed")
+            .field("upload_id", upload_id)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("prepare upload complete failed")
@@ -936,6 +1029,14 @@ std::expected<UploadCompleteFinalizeInfo, StorageError> StorageRepository::final
             tx.commit();
         }
         return result;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("finalize upload complete failed")
+            .field("upload_id", upload_id)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("finalize upload complete failed")
@@ -977,7 +1078,7 @@ std::expected<DeleteNodeInfo, StorageError> StorageRepository::delete_node_recor
             const pqxx::result ref_rows =
                 execute_decrement_storage_object_ref_count(tx, *existing->sha256, now_s.count());
             if (!ref_rows.empty()) {
-                const std::optional<std::int64_t> ref_count = parse_storage_object_ref_count_row(ref_rows.front());
+                const std::optional<std::int64_t> ref_count = parse_storage_object_ref_count_row(ref_rows.one_row());
                 if (ref_count.has_value() && *ref_count <= 0) {
                     cleanup_sha = existing->sha256;
                 }
@@ -999,6 +1100,14 @@ std::expected<DeleteNodeInfo, StorageError> StorageRepository::delete_node_recor
             .node_type = StorageNodeType::Directory,
             .cleanup_sha = std::nullopt,
         };
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("delete node record failed")
+            .field("path", scoped_path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(StorageError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("delete node record failed")
@@ -1028,6 +1137,15 @@ StoreDownloadTicketStatus StorageRepository::store_download_ticket(std::string_v
         }
         tx.commit();
         return StoreDownloadTicketStatus::Stored;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("store download ticket failed")
+            .field("user_id", user_id)
+            .field("path", canonical_path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return StoreDownloadTicketStatus::InternalError;
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("store download ticket failed")
@@ -1065,6 +1183,13 @@ std::expected<DownloadTicketInfo, FindDownloadTicketError> StorageRepository::fi
             .canonical_path = row->canonical_path,
             .expires_at_s = row->expires_at_s,
         };
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("find download ticket failed")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return std::unexpected(FindDownloadTicketError::InternalError);
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("find download ticket failed")
@@ -1097,7 +1222,7 @@ StorageGcSnapshot StorageRepository::collect_storage_gc_snapshot(std::chrono::se
         const pqxx::result expired_rows = execute_find_expired_upload_sessions(tx, expired_before_s.count());
         snapshot.expired_sessions.reserve(expired_rows.size());
         for (const auto& row : expired_rows) {
-            const std::optional<GcExpiredUploadSession> session = parse_gc_expired_upload_session_row(row);
+            const std::optional<GcExpiredUploadSession> session = parse_gc_expired_upload_session_row(pqxx::row(row));
             if (!session.has_value()) {
                 throw std::runtime_error("gc_expired_upload_session_row_invalid");
             }
@@ -1111,7 +1236,7 @@ StorageGcSnapshot StorageRepository::collect_storage_gc_snapshot(std::chrono::se
         const pqxx::result active_temp_rows = execute_list_active_temp_rel_paths(tx);
         snapshot.active_temp_rel_paths.reserve(active_temp_rows.size());
         for (const auto& row : active_temp_rows) {
-            const std::optional<std::string> path = parse_string_value_row(row);
+            const std::optional<std::string> path = parse_string_value_row(pqxx::row(row));
             if (!path.has_value()) {
                 throw std::runtime_error("active_temp_path_row_invalid");
             }
@@ -1124,7 +1249,7 @@ StorageGcSnapshot StorageRepository::collect_storage_gc_snapshot(std::chrono::se
         const pqxx::result object_path_rows = execute_list_object_rel_paths(tx);
         snapshot.object_rel_paths_in_db.reserve(object_path_rows.size());
         for (const auto& row : object_path_rows) {
-            const std::optional<std::string> path = parse_string_value_row(row);
+            const std::optional<std::string> path = parse_string_value_row(pqxx::row(row));
             if (!path.has_value()) {
                 throw std::runtime_error("object_rel_path_row_invalid");
             }
@@ -1134,7 +1259,7 @@ StorageGcSnapshot StorageRepository::collect_storage_gc_snapshot(std::chrono::se
         const pqxx::result orphan_rows = execute_list_orphan_storage_objects(tx);
         snapshot.orphan_objects.reserve(orphan_rows.size());
         for (const auto& row : orphan_rows) {
-            const std::optional<GcOrphanObject> orphan = parse_gc_orphan_object_row(row);
+            const std::optional<GcOrphanObject> orphan = parse_gc_orphan_object_row(pqxx::row(row));
             if (!orphan.has_value()) {
                 throw std::runtime_error("orphan_storage_object_row_invalid");
             }
@@ -1143,6 +1268,18 @@ StorageGcSnapshot StorageRepository::collect_storage_gc_snapshot(std::chrono::se
 
         tx.commit();
         return snapshot;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("collect storage gc snapshot failed")
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "return_internal_error");
+        return {.status = StorageGcSnapshotStatus::InternalError,
+                .expired_sessions = {},
+                .active_temp_rel_paths = {},
+                .object_rel_paths_in_db = {},
+                .orphan_objects = {},
+                .expired_download_ticket_count = 0};
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("collect storage gc snapshot failed")
@@ -1191,6 +1328,14 @@ CleanupStatus StorageRepository::cleanup_unreferenced_object(
         execute_delete_cleanup_candidate_object(tx, sha256);
         tx.commit();
         return CleanupStatus::Cleaned;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .error("cleanup unreferenced object failed")
+            .field("sha256", sha256)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "keep_orphan_row_for_gc");
+        return CleanupStatus::InternalError;
     } catch (const std::exception& e) {
         common::Logger::instance()
             .error("cleanup unreferenced object failed")
@@ -1238,6 +1383,14 @@ CleanupStatus StorageRepository::cleanup_file_only_object(
         }
         tx.commit();
         return CleanupStatus::Cleaned;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .warn("cleanup file-only orphan object failed")
+            .field("path", object_abs_path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "keep_orphan");
+        return CleanupStatus::InternalError;
     } catch (const std::exception& e) {
         common::Logger::instance()
             .warn("cleanup file-only orphan object failed")
@@ -1286,6 +1439,14 @@ CleanupStatus StorageRepository::cleanup_temp_file(
         }
         tx.commit();
         return CleanupStatus::Cleaned;
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .warn("cleanup temp file failed")
+            .field("path", temp_abs_path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "keep_orphan");
+        return CleanupStatus::InternalError;
     } catch (const std::exception& e) {
         common::Logger::instance()
             .warn("cleanup temp file failed")
@@ -1329,6 +1490,15 @@ void StorageRepository::cleanup_upload_failure_object(
             return;
         }
         tx.commit();
+    } catch (const pqxx::sql_error& e) {
+        common::Logger::instance()
+            .warn("upload complete rollback object cleanup failed")
+            .field("upload_id", upload_id)
+            .field("sha256", sha256)
+            .field("path", object_abs_path)
+            .field("sql_state", e.sqlstate())
+            .field("error", e.what())
+            .field("decision", "keep_orphan");
     } catch (const std::exception& e) {
         common::Logger::instance()
             .warn("upload complete rollback object cleanup failed")

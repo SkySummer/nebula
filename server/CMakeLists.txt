@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Nebula LANGUAGES CXX)
+project(NebulaServer LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS true)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -18,9 +18,9 @@ set(INCLUDE_DIR "${PROJECT_SOURCE_DIR}/include")
 set(TEST_DIR "${PROJECT_SOURCE_DIR}/tests")
 
 find_package(Threads REQUIRED)
-find_package(OpenSSL REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBPQXX REQUIRED IMPORTED_TARGET libpqxx)
+find_package(gRPC REQUIRED CONFIG)
+find_package(OpenSSL REQUIRED CONFIG)
+find_package(libpqxx REQUIRED CONFIG)
 
 file(GLOB_RECURSE NEBULA_CORE_SRC CONFIGURE_DEPENDS "${SRC_DIR}/*.cpp")
 list(REMOVE_ITEM NEBULA_CORE_SRC "${SRC_DIR}/main.cpp")
@@ -32,14 +32,13 @@ set_target_properties(nebula_core PROPERTIES CXX_EXTENSIONS OFF)
 
 target_include_directories(nebula_core PUBLIC ${INCLUDE_DIR})
 target_compile_options(nebula_core PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(nebula_core PUBLIC Threads::Threads OpenSSL::Crypto PkgConfig::LIBPQXX)
+target_link_libraries(nebula_core PUBLIC Threads::Threads gRPC::grpc++ OpenSSL::Crypto libpqxx::pqxx)
 
 add_executable(nebula "${SRC_DIR}/main.cpp")
 target_compile_options(nebula PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(nebula PRIVATE nebula_core)
 
-include(CTest)
-if (BUILD_TESTING)
+if (NEBULA_BUILD_TESTING)
     function(add_nebula_test target_name source_file)
         add_executable(${target_name} "${TEST_DIR}/${source_file}")
         set_target_properties(${target_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests" CXX_EXTENSIONS OFF)
